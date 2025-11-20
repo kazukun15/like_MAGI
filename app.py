@@ -19,8 +19,197 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🧬 MAGI風 マルチAI分析システム（Gemini 2.5 Flash）")
-st.caption("テキスト・画像・音声を、多視点のAIエージェントで分析し、MAGI風レポートを生成します。")
+# ------------------------------------------------------
+# MAGI風 カスタムCSS
+# ------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    /* 全体の背景とフォント */
+    .stApp {
+        background: radial-gradient(circle at top, #222b40 0, #050710 45%, #02030a 100%);
+        color: #e0e4ff;
+        font-family: "Roboto Mono", "SF Mono", "Consolas", "Noto Sans JP", monospace;
+    }
+
+    /* スクロールバー細め */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #3e4a6e;
+        border-radius: 3px;
+    }
+
+    /* MAGIヘッダー */
+    .magi-header {
+        border: 1px solid #4d5cff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 16px;
+        background: linear-gradient(135deg, rgba(35,50,95,0.95), rgba(10,15,35,0.95));
+        box-shadow: 0 0 20px rgba(80,120,255,0.35);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .magi-header-left {
+        display: flex;
+        flex-direction: column;
+    }
+    .magi-header-title {
+        font-size: 20px;
+        letter-spacing: 0.18em;
+        color: #e8ecff;
+        text-transform: uppercase;
+    }
+    .magi-header-sub {
+        font-size: 11px;
+        color: #9fa8ff;
+        margin-top: 4px;
+    }
+    .magi-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #b6ffcc;
+    }
+    .magi-status-light {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: radial-gradient(circle, #9fffcb 0, #00ff66 40%, #008833 100%);
+        box-shadow: 0 0 8px #00ff99;
+        animation: magi-pulse 1.5s infinite ease-in-out;
+    }
+
+    @keyframes magi-pulse {
+        0% { transform: scale(1); opacity: 0.8; }
+        50% { transform: scale(1.3); opacity: 1; }
+        100% { transform: scale(1); opacity: 0.8; }
+    }
+
+    /* インフォカード（上部説明など） */
+    .magi-info-card {
+        border-radius: 10px;
+        border: 1px solid rgba(130,140,200,0.6);
+        background: linear-gradient(135deg, rgba(16,22,48,0.95), rgba(6,10,26,0.95));
+        padding: 10px 14px;
+        font-size: 13px;
+        color: #cfd6ff;
+        margin-bottom: 8px;
+    }
+    .magi-info-card b {
+        color: #ffffff;
+    }
+
+    /* MAGI エージェントパネル共通 */
+    .magi-panel {
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-top: 6px;
+        margin-bottom: 6px;
+        font-size: 13px;
+        line-height: 1.5;
+        border: 1px solid rgba(140,160,255,0.4);
+        background: radial-gradient(circle at top, rgba(18,26,60,0.98), rgba(5,8,22,0.98));
+        box-shadow: 0 0 15px rgba(90,110,200,0.35);
+    }
+    .magi-panel h3, .magi-panel h4 {
+        margin-top: 8px;
+        margin-bottom: 4px;
+        font-size: 14px;
+        color: #ffffff;
+    }
+
+    /* 各エージェント色分け */
+    .magi-panel-logic {
+        border-color: #497bff;
+        box-shadow: 0 0 16px rgba(74,123,255,0.4);
+    }
+    .magi-panel-human {
+        border-color: #ffb349;
+        box-shadow: 0 0 16px rgba(255,179,73,0.4);
+    }
+    .magi-panel-reality {
+        border-color: #3fd684;
+        box-shadow: 0 0 16px rgba(63,214,132,0.4);
+    }
+    .magi-panel-media {
+        border-color: #c36bff;
+        box-shadow: 0 0 16px rgba(195,107,255,0.4);
+    }
+
+    /* 統合コンソール */
+    .magi-aggregator {
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-top: 10px;
+        border: 1px solid #6f8dff;
+        background: radial-gradient(circle at top, rgba(31,42,90,0.98), rgba(6,8,20,0.98));
+        box-shadow: 0 0 22px rgba(110,140,255,0.5);
+        font-size: 14px;
+        color: #ecf0ff;
+    }
+    .magi-aggregator h3, .magi-aggregator h4 {
+        margin-top: 10px;
+        margin-bottom: 6px;
+        color: #ffffff;
+    }
+
+    /* セクションタイトルの装飾 */
+    .magi-section-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: #e3e7ff;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-top: 16px;
+        margin-bottom: 6px;
+    }
+    .magi-divider {
+        height: 1px;
+        border: none;
+        background: linear-gradient(to right, #4b5cff, transparent);
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# MAGI ヘッダー
+st.markdown(
+    """
+    <div class="magi-header">
+        <div class="magi-header-left">
+            <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
+            <div class="magi-header-sub">
+                GEMINI 2.5 FLASH · MULTI-VIEW ANALYSIS · HUMAN / LOGIC / REALITY / MEDIA
+            </div>
+        </div>
+        <div class="magi-status">
+            <div class="magi-status-light"></div>
+            <span>SYSTEM STATUS: ONLINE</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# 1行目は説明カード
+st.markdown(
+    """
+    <div class="magi-info-card">
+    <b>概要：</b> テキスト・画像・音声など、媒体を問わず入力された情報を、
+    <b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> の 4つのエージェントがそれぞれの視点から分析し、<br>
+    最後に統合 AI が <b>MAGI システム風レポート</b> として結論・アクションプランを提示します。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ======================================================
@@ -49,7 +238,7 @@ def get_gemini_model():
 
 
 # ======================================================
-# ユーティリティ：媒体のテキスト化
+# 媒体のテキスト化（画像・音声）
 # ======================================================
 def describe_image_with_gemini(img: Image.Image) -> str:
     """画像の内容を Gemini に説明させる"""
@@ -80,7 +269,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# MAGI エージェント用 共通呼び出し
+# MAGI エージェント呼び出し
 # ======================================================
 def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> str:
     """
@@ -219,15 +408,15 @@ def build_word_report(
 # ======================================================
 # UI：入力エリア
 # ======================================================
-st.markdown("### 1. 質問・テーマの入力")
+st.markdown('<div class="magi-section-title">INPUT · QUERY & MEDIA</div><hr class="magi-divider">', unsafe_allow_html=True)
 
 user_question = st.text_area(
-    "あなたが相談したい内容・聞きたいこと（必須）",
-    placeholder="例：この企画の方向性と改善点をMAGIに評価してほしい。\n例：この写真や音声から受ける印象と、今後の戦略案を知りたい、など。",
+    "MAGI に投げたい「問い」",
+    placeholder="例：この企画の方向性と改善点をMAGIに評価してほしい。\n例：この写真や音声から受ける印象と、次に取るべき行動を知りたい、など。",
     height=120,
 )
 
-st.markdown("### 2. 分析したい媒体（任意）")
+st.markdown("#### 媒体アップロード（任意）")
 col1, col2 = st.columns(2)
 
 uploaded_file = None
@@ -236,14 +425,14 @@ media_type: Optional[str] = None
 
 with col1:
     file = st.file_uploader(
-        "画像 / 音声 / テキストファイル（任意）",
+        "画像 / 音声 / テキストファイル",
         type=["jpg", "jpeg", "png", "wav", "mp3", "m4a", "txt"],
     )
     if file:
         uploaded_file = file
 
 with col2:
-    cam = st.camera_input("カメラで撮影（任意）")
+    cam = st.camera_input("カメラで撮影")
     if cam:
         uploaded_file = cam
 
@@ -297,7 +486,7 @@ if uploaded_file is not None:
 # ======================================================
 # MAGI エージェントによる分析
 # ======================================================
-st.markdown("### 3. MAGI エージェントによる分析")
+st.markdown('<div class="magi-section-title">PROCESS · MAGI AGENT ANALYSIS</div><hr class="magi-divider">', unsafe_allow_html=True)
 
 if st.button("🔎 MAGI による分析を実行", type="primary"):
     if not user_question and not text_input and not any(
@@ -367,18 +556,47 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
 
     st.success("各エージェントの分析が完了しました。")
 
-    # 各エージェントの結果表示
-    for name, text in agent_outputs.items():
-        with st.expander(f"🧬 {name}", expanded=False):
-            st.markdown(text)
+    # --- 各エージェントの結果を MAGIパネル風に表示 ---
+    colL, colR = st.columns(2)
+
+    with colL:
+        st.markdown("##### Magi-Logic")
+        st.markdown(
+            f'<div class="magi-panel magi-panel-logic">{agent_outputs["Magi-Logic（論理・構造担当）"].replace("\n", "<br>")}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("##### Magi-Reality")
+        st.markdown(
+            f'<div class="magi-panel magi-panel-reality">{agent_outputs["Magi-Reality（現実・運用担当）"].replace("\n", "<br>")}</div>',
+            unsafe_allow_html=True,
+        )
+
+    with colR:
+        st.markdown("##### Magi-Human")
+        st.markdown(
+            f'<div class="magi-panel magi-panel-human">{agent_outputs["Magi-Human（感情・心理担当）"].replace("\n", "<br>")}</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("##### Magi-Media")
+        st.markdown(
+            f'<div class="magi-panel magi-panel-media">{agent_outputs["Magi-Media（媒体解釈担当）"].replace("\n", "<br>")}</div>',
+            unsafe_allow_html=True,
+        )
 
     # ==================================================
     # MAGI 統合AI
     # ==================================================
-    st.markdown("### 4. MAGI統合AIの結論（合議結果レポート）")
+    st.markdown('<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">', unsafe_allow_html=True)
+
     with st.spinner("MAGI統合AIが結論をまとめています..."):
         aggregated = call_magi_aggregator(agent_outputs, context)
-    st.markdown(aggregated)
+
+    st.markdown(
+        f'<div class="magi-aggregator">{aggregated.replace("\n", "<br>")}</div>',
+        unsafe_allow_html=True,
+    )
 
     # ==================================================
     # レポート出力
@@ -390,7 +608,8 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         image=image_for_report,
     )
 
-    st.markdown("### 5. レポート出力")
+    st.markdown('<div class="magi-section-title">REPORT · EXPORT</div><hr class="magi-divider">', unsafe_allow_html=True)
+
     st.download_button(
         "📝 MAGIレポート（Word）をダウンロード",
         data=report_bytes,
@@ -399,4 +618,4 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     )
 
 else:
-    st.info("「🔎 MAGI による分析を実行」を押すと、各AIエージェントが順番に分析を開始します。")
+    st.info("下のボタンを押すと、MAGI の各エージェントが順次分析を開始します。")
