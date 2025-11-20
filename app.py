@@ -230,7 +230,7 @@ api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
 if not api_key:
     st.error(
-        "❌ Gemini の API キーが設定されていません。\n\n"
+        "Gemini の API キーが設定されていません。\n\n"
         "【Streamlit Cloud の場合】\n"
         "  Settings → Secrets で以下のように設定してください：\n"
         '  GEMINI_API_KEY = "あなたのGemini APIキー"\n\n'
@@ -269,7 +269,7 @@ def describe_image_with_gemini(img: Image.Image) -> str:
     prompt = (
         "この画像に何が写っているか、日本語で簡潔に説明してください。\n"
         "続けて、その画像が与える心理的な印象を一行で述べてください。\n"
-        "箇条書きは 1. 2. のような番号のみを使い、* や # や - は使わないでください。"
+        "箇条書きは 1. 2. のような番号のみを使い、記号は極力使わないでください。"
     )
     resp = model.generate_content([prompt, img])
     return clean_text_for_display(resp.text.strip())
@@ -283,7 +283,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
     prompt = (
         "この音声の内容を日本語でできるだけ正確に文字起こししてください。\n"
-        "出力には * や # や - などの記号は使わず、通常の日本語文だけで書いてください。"
+        "出力には特別な記号は使わず、通常の日本語文だけで書いてください。"
     )
 
     resp = model.generate_content(
@@ -314,7 +314,7 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
 - 日本語で書くこと。
 - 見出しは「【前提認識】」のように角括弧付きで書くこと。
 - 箇条書きは「1. 〜」「2. 〜」のような番号だけを使うこと。
-- * や # や - などの Markdown 記号は一切使わないこと。
+- 特殊記号や装飾的な記号は使わないこと。
 
 [出力フォーマット（この順番・見出し名を必ず守る）]
 【前提認識】
@@ -362,7 +362,7 @@ def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any])
 - 日本語で書くこと。
 - 見出しは「【全体サマリー】」のように角括弧付きで書くこと。
 - 箇条書きは「1. 〜」のような番号だけを使うこと。
-- * や # や - などの Markdown 記号は一切使わないこと。
+- 特殊記号や装飾的な記号は使わないこと。
 
 [出力フォーマット]
 【全体サマリー】
@@ -475,15 +475,17 @@ image_for_report: Optional[Image.Image] = None
 media_type: Optional[str] = None
 
 with col1:
+    # ★ type制限を外す → スマホからHEICなども選択可能
     file = st.file_uploader(
-        "画像 / 音声 / テキストファイル",
-        type=["jpg", "jpeg", "png", "wav", "mp3", "m4a", "txt"],
+        "画像 / 音声 / テキストファイル\n（スマホではここからカメラ撮影や写真選択ができます）",
+        accept_multiple_files=False,
     )
     if file:
         uploaded_file = file
 
 with col2:
-    cam = st.camera_input("カメラで撮影")
+    # カメラ入力も残す（対応端末向け）
+    cam = st.camera_input("カメラで撮影（対応端末のみ）")
     if cam:
         uploaded_file = cam
 
@@ -508,17 +510,25 @@ context: Dict[str, Any] = {
 }
 
 if uploaded_file is not None:
-    if uploaded_file.type.startswith("image/"):
+    # 画像判定
+    if uploaded_file.type and uploaded_file.type.startswith("image/"):
         media_type = "image"
-        image = Image.open(uploaded_file).convert("RGB")
-        image_for_report = image
-        st.image(image, caption="入力画像", use_column_width=True)
+        try:
+            image = Image.open(uploaded_file).convert("RGB")
+        except Exception:
+            st.error("この画像形式には対応していません。JPEG または PNG 形式の画像を使用してください。")
+            image = None
 
-        with st.spinner("画像内容を解析中（Gemini）..."):
-            img_desc = describe_image_with_gemini(image)
-        context["image_description"] = img_desc
+        if image is not None:
+            image_for_report = image
+            st.image(image, caption="入力画像", use_column_width=True)
 
-    elif uploaded_file.type.startswith("audio/"):
+            with st.spinner("画像内容を解析中（Gemini）..."):
+                img_desc = describe_image_with_gemini(image)
+            context["image_description"] = img_desc
+
+    # 音声判定
+    elif uploaded_file.type and uploaded_file.type.startswith("audio/"):
         media_type = "audio"
         st.audio(uploaded_file)
 
@@ -528,11 +538,16 @@ if uploaded_file is not None:
 
     else:
         media_type = "other"
-        if uploaded_file.type == "text/plain":
+        # テキストファイル（拡張子でも判定）
+        if (uploaded_file.type == "text/plain") or (
+            isinstance(uploaded_file.name, str) and uploaded_file.name.lower().endswith(".txt")
+        ):
             text_bytes = uploaded_file.read()
             context["text_input"] += "\n\n[ファイル内容]\n" + text_bytes.decode(
                 "utf-8", errors="ignore"
             )
+        else:
+            st.warning("対応していないファイル形式です。画像・音声・テキストファイルを使用してください。")
 
 # ======================================================
 # MAGI エージェントによる分析
@@ -659,7 +674,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     )
 
     st.download_button(
-        "📝 MAGIレポート（Word）をダウンロード",
+        "MAGIレポート（Word）をダウンロード",
         data=report_bytes,
         file_name="MAGI分析レポート_Gemini版.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
