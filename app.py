@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------
-# MAGI風 カスタムCSS
+# MAGI風 カスタムCSS（スマホ対応含む）
 # ------------------------------------------------------
 st.markdown(
     """
@@ -112,16 +112,11 @@ st.markdown(
         margin-top: 6px;
         margin-bottom: 6px;
         font-size: 13px;
-        line-height: 1.5;
+        line-height: 1.6;
         border: 1px solid rgba(140,160,255,0.4);
         background: radial-gradient(circle at top, rgba(18,26,60,0.98), rgba(5,8,22,0.98));
         box-shadow: 0 0 15px rgba(90,110,200,0.35);
-    }
-    .magi-panel h3, .magi-panel h4 {
-        margin-top: 8px;
-        margin-bottom: 4px;
-        font-size: 14px;
-        color: #ffffff;
+        overflow-wrap: break-word;
     }
 
     /* 各エージェント色分け */
@@ -152,11 +147,8 @@ st.markdown(
         box-shadow: 0 0 22px rgba(110,140,255,0.5);
         font-size: 14px;
         color: #ecf0ff;
-    }
-    .magi-aggregator h3, .magi-aggregator h4 {
-        margin-top: 10px;
-        margin-bottom: 6px;
-        color: #ffffff;
+        line-height: 1.7;
+        overflow-wrap: break-word;
     }
 
     /* セクションタイトルの装飾 */
@@ -174,6 +166,26 @@ st.markdown(
         border: none;
         background: linear-gradient(to right, #4b5cff, transparent);
         margin-bottom: 10px;
+    }
+
+    /* スマホ向け最適化 */
+    @media (max-width: 768px) {
+        .magi-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        .magi-header-title {
+            font-size: 16px;
+        }
+        .magi-panel {
+            font-size: 12px;
+            padding: 8px 10px;
+        }
+        .magi-aggregator {
+            font-size: 13px;
+            padding: 12px 14px;
+        }
     }
     </style>
     """,
@@ -199,12 +211,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# 1行目は説明カード
 st.markdown(
     """
     <div class="magi-info-card">
     <b>概要：</b> テキスト・画像・音声など、媒体を問わず入力された情報を、
-    <b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> の 4つのエージェントがそれぞれの視点から分析し、<br>
+    <b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> の4つのエージェントがそれぞれの視点から分析し、<br>
     最後に統合 AI が <b>MAGI システム風レポート</b> として結論・アクションプランを提示します。
     </div>
     """,
@@ -238,6 +249,18 @@ def get_gemini_model():
 
 
 # ======================================================
+# テキストクレンジング（＊禁止）
+# ======================================================
+def clean_text_for_display(text: str) -> str:
+    """UI・Word両方で使う、共通クレンジング処理"""
+    if not text:
+        return ""
+    # ＊などが出ても念のため除去/変換
+    text = text.replace("*", "・")
+    return text
+
+
+# ======================================================
 # 媒体のテキスト化（画像・音声）
 # ======================================================
 def describe_image_with_gemini(img: Image.Image) -> str:
@@ -245,10 +268,11 @@ def describe_image_with_gemini(img: Image.Image) -> str:
     model = get_gemini_model()
     prompt = (
         "この画像に何が写っているか、日本語で簡潔に説明してください。\n"
-        "続けて、その画像が与える心理的な印象を一行で述べてください。"
+        "続けて、その画像が与える心理的な印象を一行で述べてください。\n"
+        "箇条書きは 1. 2. のような番号のみを使い、* や # や - は使わないでください。"
     )
     resp = model.generate_content([prompt, img])
-    return resp.text.strip()
+    return clean_text_for_display(resp.text.strip())
 
 
 def transcribe_audio_with_gemini(uploaded_file) -> str:
@@ -257,7 +281,10 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
     audio_bytes = uploaded_file.getvalue()
     mime_type = uploaded_file.type or "audio/wav"
 
-    prompt = "この音声の内容を日本語でできるだけ正確に文字起こししてください。"
+    prompt = (
+        "この音声の内容を日本語でできるだけ正確に文字起こししてください。\n"
+        "出力には * や # や - などの記号は使わず、通常の日本語文だけで書いてください。"
+    )
 
     resp = model.generate_content(
         [
@@ -265,7 +292,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
             {"mime_type": mime_type, "data": audio_bytes},
         ]
     )
-    return resp.text.strip()
+    return clean_text_for_display(resp.text.strip())
 
 
 # ======================================================
@@ -273,7 +300,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 # ======================================================
 def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> str:
     """
-    各 MAGI エージェントの役割を与え、構造化されたレポートを生成させる。
+    各 MAGI エージェントの役割を与え、読みやすい日本語レポートとして出力させる。
     """
     model = get_gemini_model()
 
@@ -283,19 +310,27 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
 [あなたの役割]
 {role_prompt}
 
-[出力フォーマット（必ずこの見出しと順番を守ること）]
-### 【前提認識】
-- 箇条書きで状況や前提を整理してください。
+[出力ルール]
+- 日本語で書くこと。
+- 見出しは「【前提認識】」のように角括弧付きで書くこと。
+- 箇条書きは「1. 〜」「2. 〜」のような番号だけを使うこと。
+- * や # や - などの Markdown 記号は一切使わないこと。
 
-### 【分析】
-- あなたの視点から詳しく分析してください（箇条書き＋短い段落）。
+[出力フォーマット（この順番・見出し名を必ず守る）]
+【前提認識】
+1. （状況や前提）
 
-### 【リスク・懸念】
-- 想定されるリスクや不確実性を列挙してください。
+【分析】
+1. （あなたの視点からの分析）
 
-### 【このエージェントの結論と提案】
-- 結論：
-- 提案：
+【リスク・懸念】
+1. （リスクや不確実性）
+
+【このエージェントの結論と提案】
+結論：（一文で簡潔に）
+提案：
+1. （具体的な提案）
+2. （あれば続ける）
 """
 
     user_context = json.dumps(context, ensure_ascii=False, indent=2)
@@ -306,7 +341,7 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
             f"以下がユーザーからの情報です。これに基づいて高精度に分析してください。\n\n{user_context}",
         ]
     )
-    return resp.text.strip()
+    return clean_text_for_display(resp.text.strip())
 
 
 def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any]) -> str:
@@ -323,22 +358,30 @@ def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any])
 - ユーザーにとって実行可能で現実的な「結論」と「アクションプラン」を提示する
 - Go（実行）/ Hold（条件付き検討）/ No-Go（見送り）の判断を行う
 
+[出力ルール]
+- 日本語で書くこと。
+- 見出しは「【全体サマリー】」のように角括弧付きで書くこと。
+- 箇条書きは「1. 〜」のような番号だけを使うこと。
+- * や # や - などの Markdown 記号は一切使わないこと。
+
 [出力フォーマット]
-### 【全体サマリー】
-- 3〜7行程度で、今回の状況と結論を要約してください。
+【全体サマリー】
+1. （今回の状況と結論を要約）
 
-### 【合議結果の要点】
-- Magi-Logic：
-- Magi-Human：
-- Magi-Reality：
-- Magi-Media：
+【合議結果の要点】
+Magi-Logic：（要点）
+Magi-Human：（要点）
+Magi-Reality：（要点）
+Magi-Media：（要点）
 
-### 【推奨アクションプラン】
-- ステップ形式で 3〜7項目程度に整理してください。
+【推奨アクションプラン】
+1. （ステップ1）
+2. （ステップ2）
+3. （必要に応じて続ける）
 
-### 【MAGIとしての最終判断】
-- 判断：Go / Hold / No-Go のいずれか
-- 理由：
+【MAGIとしての最終判断】
+判断：（Go / Hold / No-Go のいずれか）
+理由：（簡潔に）
 """
 
     context_text = json.dumps(context, ensure_ascii=False, indent=2)
@@ -350,7 +393,7 @@ def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any])
             f"[ユーザーの元情報]\n{context_text}\n\n[各エージェントの結果]\n{agents_text}",
         ]
     )
-    return resp.text.strip()
+    return clean_text_for_display(resp.text.strip())
 
 
 # ======================================================
@@ -391,12 +434,14 @@ def build_word_report(
     doc.add_heading("第2章 各MAGIエージェントの分析", level=2)
     for name, text in agent_outputs.items():
         doc.add_heading(name, level=3)
-        for line in text.splitlines():
+        cleaned = clean_text_for_display(text)
+        for line in cleaned.splitlines():
             doc.add_paragraph(line)
 
     # 第3章 MAGI統合AIの結論
     doc.add_heading("第3章 MAGI統合AIの結論・アクションプラン", level=2)
-    for line in aggregated.splitlines():
+    cleaned_agg = clean_text_for_display(aggregated)
+    for line in cleaned_agg.splitlines():
         doc.add_paragraph(line)
 
     buf = io.BytesIO()
@@ -408,11 +453,17 @@ def build_word_report(
 # ======================================================
 # UI：入力エリア
 # ======================================================
-st.markdown('<div class="magi-section-title">INPUT · QUERY & MEDIA</div><hr class="magi-divider">', unsafe_allow_html=True)
+st.markdown(
+    '<div class="magi-section-title">INPUT · QUERY & MEDIA</div><hr class="magi-divider">',
+    unsafe_allow_html=True,
+)
 
 user_question = st.text_area(
     "MAGI に投げたい「問い」",
-    placeholder="例：この企画の方向性と改善点をMAGIに評価してほしい。\n例：この写真や音声から受ける印象と、次に取るべき行動を知りたい、など。",
+    placeholder=(
+        "例：この企画の方向性と改善点をMAGIに評価してほしい。\n"
+        "例：この写真や音声から受ける印象と、次に取るべき行動を知りたい。"
+    ),
     height=120,
 )
 
@@ -486,7 +537,10 @@ if uploaded_file is not None:
 # ======================================================
 # MAGI エージェントによる分析
 # ======================================================
-st.markdown('<div class="magi-section-title">PROCESS · MAGI AGENT ANALYSIS</div><hr class="magi-divider">', unsafe_allow_html=True)
+st.markdown(
+    '<div class="magi-section-title">PROCESS · MAGI AGENT ANALYSIS</div><hr class="magi-divider">',
+    unsafe_allow_html=True,
+)
 
 if st.button("🔎 MAGI による分析を実行", type="primary"):
     if not user_question and not text_input and not any(
@@ -500,13 +554,10 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     # --- Magi-Logic ---
     with st.spinner("Magi-Logic（論理・構造担当）が分析中..."):
         out_logic = call_gemini_agent_structured(
-            role_prompt="""
-論理・構造・因果関係の分析に特化した AI。
-- 問題の構造化
-- 論理的な矛盾の指摘
-- 実現までのステップ設計
-に重点を置いて、高精度に分析してください。
-""",
+            role_prompt=(
+                "論理・構造・因果関係の分析に特化した AI。\n"
+                "問題の構造化・論理的な矛盾の指摘・実現までのステップ設計に重点を置いて、高精度に分析してください。"
+            ),
             context=context,
         )
     agent_outputs["Magi-Logic（論理・構造担当）"] = out_logic
@@ -514,13 +565,10 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     # --- Magi-Human ---
     with st.spinner("Magi-Human（感情・心理担当）が分析中..."):
         out_human = call_gemini_agent_structured(
-            role_prompt="""
-人間の感情・心理・コミュニケーションに特化した AI。
-- 関係者がどんな気持ちになるか
-- 伝え方・言葉選びの配慮
-- メンタル面のリスク・ケア
-に重点を置いて分析してください。
-""",
+            role_prompt=(
+                "人間の感情・心理・コミュニケーションに特化した AI。\n"
+                "関係者の気持ち・伝え方・言葉選び・メンタル面のリスクとケアに重点を置いて分析してください。"
+            ),
             context=context,
         )
     agent_outputs["Magi-Human（感情・心理担当）"] = out_human
@@ -528,13 +576,10 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     # --- Magi-Reality ---
     with st.spinner("Magi-Reality（現実・運用担当）が分析中..."):
         out_reality = call_gemini_agent_structured(
-            role_prompt="""
-現実的な運用・コスト・リスク管理に特化した AI。
-- 実現可能性
-- 必要なリソースと制約
-- 現場で起こりそうな問題
-に重点を置いて分析してください。
-""",
+            role_prompt=(
+                "現実的な運用・コスト・リスク管理に特化した AI。\n"
+                "実現可能性・必要なリソースと制約・現場で起こりそうな問題に重点を置いて分析してください。"
+            ),
             context=context,
         )
     agent_outputs["Magi-Reality（現実・運用担当）"] = out_reality
@@ -542,14 +587,11 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     # --- Magi-Media ---
     with st.spinner("Magi-Media（媒体解釈担当）が分析中..."):
         out_media = call_gemini_agent_structured(
-            role_prompt="""
-画像・音声・テキストなど媒体の特徴を踏まえた解釈に特化した AI。
-- 入力された媒体が与える印象
-- その媒体をどう活かすべきか
-- 改善案（構図・表現・長さなど）
-に重点を置いて分析してください。
-媒体が無い場合は、文章表現の観点から分析してください。
-""",
+            role_prompt=(
+                "画像・音声・テキストなど媒体の特徴を踏まえた解釈に特化した AI。\n"
+                "入力された媒体が与える印象、その媒体の活かし方、構図や表現などの改善案に重点を置いて分析してください。\n"
+                "媒体が無い場合は、文章表現の観点から分析してください。"
+            ),
             context=context,
         )
     agent_outputs["Magi-Media（媒体解釈担当）"] = out_media
@@ -562,39 +604,42 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     with colL:
         st.markdown("##### Magi-Logic")
         st.markdown(
-            f'<div class="magi-panel magi-panel-logic">{agent_outputs["Magi-Logic（論理・構造担当）"].replace("\n", "<br>")}</div>',
+            f'<div class="magi-panel magi-panel-logic">{clean_text_for_display(agent_outputs["Magi-Logic（論理・構造担当）"]).replace("\n", "<br>")}</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown("##### Magi-Reality")
         st.markdown(
-            f'<div class="magi-panel magi-panel-reality">{agent_outputs["Magi-Reality（現実・運用担当）"].replace("\n", "<br>")}</div>',
+            f'<div class="magi-panel magi-panel-reality">{clean_text_for_display(agent_outputs["Magi-Reality（現実・運用担当）"]).replace("\n", "<br>")}</div>',
             unsafe_allow_html=True,
         )
 
     with colR:
         st.markdown("##### Magi-Human")
         st.markdown(
-            f'<div class="magi-panel magi-panel-human">{agent_outputs["Magi-Human（感情・心理担当）"].replace("\n", "<br>")}</div>',
+            f'<div class="magi-panel magi-panel-human">{clean_text_for_display(agent_outputs["Magi-Human（感情・心理担当）"]).replace("\n", "<br>")}</div>',
             unsafe_allow_html=True,
         )
 
         st.markdown("##### Magi-Media")
         st.markdown(
-            f'<div class="magi-panel magi-panel-media">{agent_outputs["Magi-Media（媒体解釈担当）"].replace("\n", "<br>")}</div>',
+            f'<div class="magi-panel magi-panel-media">{clean_text_for_display(agent_outputs["Magi-Media（媒体解釈担当）"]).replace("\n", "<br>")}</div>',
             unsafe_allow_html=True,
         )
 
     # ==================================================
     # MAGI 統合AI
     # ==================================================
-    st.markdown('<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
 
     with st.spinner("MAGI統合AIが結論をまとめています..."):
         aggregated = call_magi_aggregator(agent_outputs, context)
 
     st.markdown(
-        f'<div class="magi-aggregator">{aggregated.replace("\n", "<br>")}</div>',
+        f'<div class="magi-aggregator">{clean_text_for_display(aggregated).replace("\n", "<br>")}</div>',
         unsafe_allow_html=True,
     )
 
@@ -608,7 +653,10 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         image=image_for_report,
     )
 
-    st.markdown('<div class="magi-section-title">REPORT · EXPORT</div><hr class="magi-divider">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="magi-section-title">REPORT · EXPORT</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
 
     st.download_button(
         "📝 MAGIレポート（Word）をダウンロード",
