@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------
-# MAGI風 カスタムCSS（スマホ対応含む）
+# MAGI風 カスタムCSS（スマホ対応・投票表示つき）
 # ------------------------------------------------------
 st.markdown(
     """
@@ -135,6 +135,55 @@ st.markdown(
     .magi-panel-media {
         border-color: #c36bff;
         box-shadow: 0 0 16px rgba(195,107,255,0.4);
+    }
+
+    /* 要約テキスト */
+    .magi-panel-summary {
+        margin-top: 8px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #e3e7ff;
+    }
+
+    /* 投票ステータス（可決／否決／保留） */
+    .magi-vote {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 6px 10px;
+        border-radius: 6px;
+        margin-bottom: 6px;
+        font-size: 11px;
+    }
+    .magi-vote-label-en {
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        opacity: 0.9;
+    }
+    .magi-vote-label-jp {
+        font-size: 12px;
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    .magi-vote-approve {
+        background: linear-gradient(135deg, #0b5428, #21b35a);
+        border: 1px solid #39ff9c;
+        box-shadow: 0 0 12px rgba(50,255,170,0.7);
+        color: #e8fff4;
+    }
+    .magi-vote-reject {
+        background: linear-gradient(135deg, #5b1111, #d63232);
+        border: 1px solid #ff7b7b;
+        box-shadow: 0 0 12px rgba(255,100,100,0.7);
+        color: #ffecec;
+    }
+    .magi-vote-hold {
+        background: linear-gradient(135deg, #6a5212, #d7a52b);
+        border: 1px solid #ffd966;
+        box-shadow: 0 0 12px rgba(255,220,120,0.7);
+        color: #fff8e1;
     }
 
     /* 統合コンソール */
@@ -255,7 +304,6 @@ def clean_text_for_display(text: str) -> str:
     """UI・Word両方で使う、共通クレンジング処理"""
     if not text:
         return ""
-    # ＊などが出ても念のため除去/変換
     text = text.replace("*", "・")
     return text
 
@@ -312,11 +360,14 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
 
 [出力ルール]
 - 日本語で書くこと。
-- 見出しは「【前提認識】」のように角括弧付きで書くこと。
+- 見出しは「【要約】」のように角括弧付きで書くこと。
 - 箇条書きは「1. 〜」「2. 〜」のような番号だけを使うこと。
 - 特殊記号や装飾的な記号は使わないこと。
 
 [出力フォーマット（この順番・見出し名を必ず守る）]
+【要約】
+1. （このエージェントの結論を2〜4行程度で要約）
+
 【前提認識】
 1. （状況や前提）
 
@@ -331,6 +382,10 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
 提案：
 1. （具体的な提案）
 2. （あれば続ける）
+
+【このエージェントの判断】
+判断：（Go / Hold / No-Go のいずれか）
+理由：（判断の理由を1〜3行で）
 """
 
     user_context = json.dumps(context, ensure_ascii=False, indent=2)
@@ -394,6 +449,86 @@ Magi-Media：（要点）
         ]
     )
     return clean_text_for_display(resp.text.strip())
+
+
+# ======================================================
+# エージェント出力のパース（要約・判断）
+# ======================================================
+def parse_agent_output(text: str) -> Dict[str, str]:
+    """
+    エージェントの生テキストから、
+    ・要約
+    ・判断（Go / Hold / No-Go）
+    ・判断理由
+    をざっくり抽出する。
+    """
+    summary = ""
+    decision_code = "Hold"
+    decision_jp = "保留"
+    reason = ""
+
+    lines = text.splitlines()
+    current_section = None
+    summary_lines = []
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+
+        # セクション見出し判定
+        if s.startswith("【") and s.endswith("】"):
+            title = s.strip("【】")
+            if "要約" in title:
+                current_section = "summary"
+            elif "このエージェントの判断" in title:
+                current_section = "judgment"
+            else:
+                current_section = None
+            continue
+
+        # セクションごとの格納
+        if current_section == "summary":
+            summary_lines.append(s)
+
+        # 判断と理由の抽出
+        if "判断：" in s:
+            dec_part = s.split("判断：", 1)[1].strip()
+            if any(k in dec_part for k in ["Go", "可決", "承認"]):
+                decision_code = "Go"
+                decision_jp = "可決"
+            elif any(k in dec_part for k in ["No-Go", "否決", "却下"]):
+                decision_code = "No-Go"
+                decision_jp = "否決"
+            elif any(k in dec_part for k in ["Hold", "保留"]):
+                decision_code = "Hold"
+                decision_jp = "保留"
+        if "理由：" in s and not reason:
+            reason = s.split("理由：", 1)[1].strip()
+
+    summary = "\n".join(summary_lines).strip()
+
+    return {
+        "summary": summary,
+        "decision_code": decision_code,
+        "decision_jp": decision_jp,
+        "reason": reason,
+    }
+
+
+def decision_to_css(decision_code: str) -> Dict[str, str]:
+    """
+    判断コードを CSS クラスと英語ラベルに対応付け。
+    """
+    code = decision_code or "Hold"
+    code = code.strip()
+
+    if code == "Go":
+        return {"css": "approve", "en": "APPROVE", "jp": "可決"}
+    if code == "No-Go":
+        return {"css": "reject", "en": "REJECT", "jp": "否決"}
+    # デフォルト Hold
+    return {"css": "hold", "en": "HOLD", "jp": "保留"}
 
 
 # ======================================================
@@ -467,27 +602,36 @@ user_question = st.text_area(
     height=120,
 )
 
-st.markdown("#### 媒体アップロード（任意）")
-col1, col2 = st.columns(2)
+st.markdown("#### 媒体入力モード（任意）")
+input_mode = st.radio(
+    "画像・音声の入力方法を選択してください。",
+    ["ファイル／写真ライブラリから選択", "カメラで撮影", "使用しない"],
+    index=0,
+)
 
-uploaded_file = None
+col1, col2 = st.columns(2)
+uploaded_file: Optional[st.runtime.uploaded_file_manager.UploadedFile] = None
 image_for_report: Optional[Image.Image] = None
 media_type: Optional[str] = None
 
 with col1:
-    # ★ type制限を外す → スマホからHEICなども選択可能
-    file = st.file_uploader(
-        "画像 / 音声 / テキストファイル\n（スマホではここからカメラ撮影や写真選択ができます）",
-        accept_multiple_files=False,
-    )
-    if file:
-        uploaded_file = file
+    if input_mode == "ファイル／写真ライブラリから選択":
+        file = st.file_uploader(
+            "画像 / 音声 / テキストファイル\n（スマホではここからカメラ撮影や写真選択ができます）",
+            accept_multiple_files=False,
+        )
+        if file:
+            uploaded_file = file
+    else:
+        st.write("ファイル／写真ライブラリからの選択は無効です。")
 
 with col2:
-    # カメラ入力も残す（対応端末向け）
-    cam = st.camera_input("カメラで撮影（対応端末のみ）")
-    if cam:
-        uploaded_file = cam
+    if input_mode == "カメラで撮影":
+        cam = st.camera_input("カメラで撮影（対応端末のみ）")
+        if cam:
+            uploaded_file = cam
+    else:
+        st.write("カメラは現在オフになっています。")
 
 text_input = st.text_area(
     "補足テキスト（任意）",
@@ -510,7 +654,6 @@ context: Dict[str, Any] = {
 }
 
 if uploaded_file is not None:
-    # 画像判定
     if uploaded_file.type and uploaded_file.type.startswith("image/"):
         media_type = "image"
         try:
@@ -527,7 +670,6 @@ if uploaded_file is not None:
                 img_desc = describe_image_with_gemini(image)
             context["image_description"] = img_desc
 
-    # 音声判定
     elif uploaded_file.type and uploaded_file.type.startswith("audio/"):
         media_type = "audio"
         st.audio(uploaded_file)
@@ -538,7 +680,6 @@ if uploaded_file is not None:
 
     else:
         media_type = "other"
-        # テキストファイル（拡張子でも判定）
         if (uploaded_file.type == "text/plain") or (
             isinstance(uploaded_file.name, str) and uploaded_file.name.lower().endswith(".txt")
         ):
@@ -613,34 +754,105 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
 
     st.success("各エージェントの分析が完了しました。")
 
-    # --- 各エージェントの結果を MAGIパネル風に表示 ---
+    # 各エージェント出力をパース（要約＋判断）
+    parsed_agents: Dict[str, Dict[str, str]] = {}
+    for name, txt in agent_outputs.items():
+        parsed_agents[name] = parse_agent_output(txt)
+
+    # --- 各エージェントの結果を MAGIパネル風に表示（要約＋投票） ---
     colL, colR = st.columns(2)
 
+    # 左側：Logic / Reality
     with colL:
+        # Logic
+        logic_key = "Magi-Logic（論理・構造担当）"
+        logic_info = parsed_agents.get(logic_key, {})
+        logic_dec = decision_to_css(logic_info.get("decision_code", "Hold"))
         st.markdown("##### Magi-Logic")
         st.markdown(
-            f'<div class="magi-panel magi-panel-logic">{clean_text_for_display(agent_outputs["Magi-Logic（論理・構造担当）"]).replace("\n", "<br>")}</div>',
+            f'''
+            <div class="magi-panel magi-panel-logic">
+              <div class="magi-vote magi-vote-{logic_dec["css"]}">
+                <div class="magi-vote-label-en">{logic_dec["en"]}</div>
+                <div class="magi-vote-label-jp">{logic_dec["jp"]}</div>
+              </div>
+              <div class="magi-panel-summary">
+                {clean_text_for_display(logic_info.get("summary", "")).replace("\n", "<br>")}
+              </div>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
+        with st.expander("Logic の詳細を見る"):
+            st.markdown(clean_text_for_display(agent_outputs[logic_key]).replace("\n", "<br>"), unsafe_allow_html=True)
 
+        # Reality
+        reality_key = "Magi-Reality（現実・運用担当）"
+        reality_info = parsed_agents.get(reality_key, {})
+        reality_dec = decision_to_css(reality_info.get("decision_code", "Hold"))
         st.markdown("##### Magi-Reality")
         st.markdown(
-            f'<div class="magi-panel magi-panel-reality">{clean_text_for_display(agent_outputs["Magi-Reality（現実・運用担当）"]).replace("\n", "<br>")}</div>',
+            f'''
+            <div class="magi-panel magi-panel-reality">
+              <div class="magi-vote magi-vote-{reality_dec["css"]}">
+                <div class="magi-vote-label-en">{reality_dec["en"]}</div>
+                <div class="magi-vote-label-jp">{reality_dec["jp"]}</div>
+              </div>
+              <div class="magi-panel-summary">
+                {clean_text_for_display(reality_info.get("summary", "")).replace("\n", "<br>")}
+              </div>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
+        with st.expander("Reality の詳細を見る"):
+            st.markdown(clean_text_for_display(agent_outputs[reality_key]).replace("\n", "<br>"), unsafe_allow_html=True)
 
+    # 右側：Human / Media
     with colR:
+        # Human
+        human_key = "Magi-Human（感情・心理担当）"
+        human_info = parsed_agents.get(human_key, {})
+        human_dec = decision_to_css(human_info.get("decision_code", "Hold"))
         st.markdown("##### Magi-Human")
         st.markdown(
-            f'<div class="magi-panel magi-panel-human">{clean_text_for_display(agent_outputs["Magi-Human（感情・心理担当）"]).replace("\n", "<br>")}</div>',
+            f'''
+            <div class="magi-panel magi-panel-human">
+              <div class="magi-vote magi-vote-{human_dec["css"]}">
+                <div class="magi-vote-label-en">{human_dec["en"]}</div>
+                <div class="magi-vote-label-jp">{human_dec["jp"]}</div>
+              </div>
+              <div class="magi-panel-summary">
+                {clean_text_for_display(human_info.get("summary", "")).replace("\n", "<br>")}
+              </div>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
+        with st.expander("Human の詳細を見る"):
+            st.markdown(clean_text_for_display(agent_outputs[human_key]).replace("\n", "<br>"), unsafe_allow_html=True)
 
+        # Media
+        media_key = "Magi-Media（媒体解釈担当）"
+        media_info = parsed_agents.get(media_key, {})
+        media_dec = decision_to_css(media_info.get("decision_code", "Hold"))
         st.markdown("##### Magi-Media")
         st.markdown(
-            f'<div class="magi-panel magi-panel-media">{clean_text_for_display(agent_outputs["Magi-Media（媒体解釈担当）"]).replace("\n", "<br>")}</div>',
+            f'''
+            <div class="magi-panel magi-panel-media">
+              <div class="magi-vote magi-vote-{media_dec["css"]}">
+                <div class="magi-vote-label-en">{media_dec["en"]}</div>
+                <div class="magi-vote-label-jp">{media_dec["jp"]}</div>
+              </div>
+              <div class="magi-panel-summary">
+                {clean_text_for_display(media_info.get("summary", "")).replace("\n", "<br>")}
+              </div>
+            </div>
+            ''',
             unsafe_allow_html=True,
         )
+        with st.expander("Media の詳細を見る"):
+            st.markdown(clean_text_for_display(agent_outputs[media_key]).replace("\n", "<br>"), unsafe_allow_html=True)
 
     # ==================================================
     # MAGI 統合AI
