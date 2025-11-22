@@ -7,6 +7,7 @@ import streamlit as st
 from PIL import Image
 
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 import docx
 
 
@@ -294,7 +295,11 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    return genai.GenerativeModel("gemini-2.5-flash")
+    # 出力量を絞ってリソース消費を抑える
+    return genai.GenerativeModel(
+        "gemini-2.5-flash",
+        generation_config={"max_output_tokens": 768},
+    )
 
 
 # ======================================================
@@ -308,23 +313,39 @@ def clean_text_for_display(text: str) -> str:
     return text
 
 
+# 入力テキストを長すぎる場合にトリミングしてトークン節約
+def trim_text(s: str, max_chars: int = 4000) -> str:
+    if not s:
+        return ""
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + "\n…（長文のためここで省略）"
+
+
 # ======================================================
 # 媒体のテキスト化（画像・音声）
 # ======================================================
 def describe_image_with_gemini(img: Image.Image) -> str:
-    """画像の内容を Gemini に説明させる"""
+    """画像の内容を Gemini に説明させる（エラーも安全に処理）"""
     model = get_gemini_model()
     prompt = (
         "この画像に何が写っているか、日本語で簡潔に説明してください。\n"
         "続けて、その画像が与える心理的な印象を一行で述べてください。\n"
         "箇条書きは 1. 2. のような番号のみを使い、記号は極力使わないでください。"
     )
-    resp = model.generate_content([prompt, img])
-    return clean_text_for_display(resp.text.strip())
+    try:
+        resp = model.generate_content([prompt, img])
+        return clean_text_for_display(resp.text.strip())
+    except ResourceExhausted:
+        return "【エラー】Gemini のリソース上限に達しました（画像解析）。時間をおいて再実行してください。"
+    except GoogleAPIError as e:
+        return f"【エラー】Gemini API画像解析で問題が発生しました: {str(e)}"
+    except Exception as e:
+        return f"【エラー】画像解析中に想定外のエラーが発生しました: {str(e)}"
 
 
 def transcribe_audio_with_gemini(uploaded_file) -> str:
-    """音声ファイルを Gemini に渡して文字起こし"""
+    """音声ファイルを Gemini に渡して文字起こし（エラーも安全に処理）"""
     model = get_gemini_model()
     audio_bytes = uploaded_file.getvalue()
     mime_type = uploaded_file.type or "audio/wav"
@@ -333,24 +354,39 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
         "この音声の内容を日本語でできるだけ正確に文字起こししてください。\n"
         "出力には特別な記号は使わず、通常の日本語文だけで書いてください。"
     )
-
-    resp = model.generate_content(
-        [
-            prompt,
-            {"mime_type": mime_type, "data": audio_bytes},
-        ]
-    )
-    return clean_text_for_display(resp.text.strip())
+    try:
+        resp = model.generate_content(
+            [
+                prompt,
+                {"mime_type": mime_type, "data": audio_bytes},
+            ]
+        )
+        return clean_text_for_display(resp.text.strip())
+    except ResourceExhausted:
+        return "【エラー】Gemini のリソース上限に達しました（音声文字起こし）。時間をおいて再実行してください。"
+    except GoogleAPIError as e:
+        return f"【エラー】Gemini API音声解析で問題が発生しました: {str(e)}"
+    except Exception as e:
+        return f"【エラー】音声解析中に想定外のエラーが発生しました: {str(e)}"
 
 
 # ======================================================
-# MAGI エージェント呼び出し
+# MAGI エージェント呼び出し（安全ラップ）
 # ======================================================
 def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> str:
     """
     各 MAGI エージェントの役割を与え、読みやすい日本語レポートとして出力させる。
+    ResourceExhausted などが来てもアプリが落ちないように例外処理。
     """
     model = get_gemini_model()
+
+    # コンテキストを少しでも軽くするため、長文はトリミング
+    trimmed_context = {
+        "user_question": trim_text(context.get("user_question", "")),
+        "text_input": trim_text(context.get("text_input", "")),
+        "audio_transcript": trim_text(context.get("audio_transcript", "")),
+        "image_description": trim_text(context.get("image_description", "")),
+    }
 
     sys_prompt = f"""
 あなたは MAGI システムの一員です。
@@ -388,15 +424,22 @@ def call_gemini_agent_structured(role_prompt: str, context: Dict[str, Any]) -> s
 理由：（判断の理由を1〜3行で）
 """
 
-    user_context = json.dumps(context, ensure_ascii=False, indent=2)
+    user_context = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
 
-    resp = model.generate_content(
-        [
-            sys_prompt,
-            f"以下がユーザーからの情報です。これに基づいて高精度に分析してください。\n\n{user_context}",
-        ]
-    )
-    return clean_text_for_display(resp.text.strip())
+    try:
+        resp = model.generate_content(
+            [
+                sys_prompt,
+                f"以下がユーザーからの情報です。これに基づいて高精度に分析してください。\n\n{user_context}",
+            ]
+        )
+        return clean_text_for_display(resp.text.strip())
+    except ResourceExhausted:
+        return "【エラー】Gemini のリソース上限に達しました（エージェント分析）。時間をおいてから再実行してください。"
+    except GoogleAPIError as e:
+        return f"【エラー】Gemini APIエージェント分析で問題が発生しました: {str(e)}"
+    except Exception as e:
+        return f"【エラー】エージェント分析中に想定外のエラーが発生しました: {str(e)}"
 
 
 def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any]) -> str:
@@ -404,6 +447,13 @@ def call_magi_aggregator(agent_outputs: Dict[str, str], context: Dict[str, Any])
     各エージェントの出力を読み取り、MAGIシステムとしての結論をまとめる。
     """
     model = get_gemini_model()
+
+    trimmed_context = {
+        "user_question": trim_text(context.get("user_question", "")),
+        "text_input": trim_text(context.get("text_input", "")),
+        "audio_transcript": trim_text(context.get("audio_transcript", "")),
+        "image_description": trim_text(context.get("image_description", "")),
+    }
 
     sys_prompt = """
 あなたは NERV の MAGI システムにおける統合 AI です。
@@ -439,16 +489,23 @@ Magi-Media：（要点）
 理由：（簡潔に）
 """
 
-    context_text = json.dumps(context, ensure_ascii=False, indent=2)
+    context_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
     agents_text = json.dumps(agent_outputs, ensure_ascii=False, indent=2)
 
-    resp = model.generate_content(
-        [
-            sys_prompt,
-            f"[ユーザーの元情報]\n{context_text}\n\n[各エージェントの結果]\n{agents_text}",
-        ]
-    )
-    return clean_text_for_display(resp.text.strip())
+    try:
+        resp = model.generate_content(
+            [
+                sys_prompt,
+                f"[ユーザーの元情報]\n{context_text}\n\n[各エージェントの結果]\n{agents_text}",
+            ]
+        )
+        return clean_text_for_display(resp.text.strip())
+    except ResourceExhausted:
+        return "【エラー】Gemini のリソース上限に達しました（MAGI統合）。時間をおいて再実行してください。"
+    except GoogleAPIError as e:
+        return f"【エラー】Gemini API統合処理で問題が発生しました: {str(e)}"
+    except Exception as e:
+        return f"【エラー】統合処理中に想定外のエラーが発生しました: {str(e)}"
 
 
 # ======================================================
@@ -520,8 +577,7 @@ def decision_to_css(decision_code: str) -> Dict[str, str]:
     """
     判断コードを CSS クラスと英語ラベルに対応付け。
     """
-    code = decision_code or "Hold"
-    code = code.strip()
+    code = (decision_code or "Hold").strip()
 
     if code == "Go":
         return {"css": "approve", "en": "APPROVE", "jp": "可決"}
