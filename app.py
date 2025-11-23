@@ -281,6 +281,7 @@ def get_gemini_model():
 def clean_text_for_display(text: str) -> str:
     if not text:
         return ""
+    # 箇条書きの * を日本語用の点に差し替え
     return text.replace("*", "・")
 
 
@@ -336,7 +337,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# 単一APIで MAGI 全員＋統合をまとめて呼び出す（JSON強制）
+# 単一APIで MAGI 全員＋統合をまとめて呼び出す（JSON＋finish_reason対応）
 # ======================================================
 def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
     """
@@ -401,20 +402,43 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
     ctx_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
 
     try:
-        # ★ここで JSON を強制するのが今回の修正ポイント
+        # JSONモード＋出力トークン増量
         resp = model.generate_content(
             [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
             generation_config={
-                "max_output_tokens": 1024,
+                "max_output_tokens": 2048,
                 "response_mime_type": "application/json",
             },
         )
-        raw = resp.text.strip()
+
+        # candidates の有無をチェック
+        if not resp.candidates:
+            return "【エラー】Gemini から候補が返されませんでした。（candidates が空です）"
+
+        cand = resp.candidates[0]
+        finish = getattr(cand, "finish_reason", None)
+
+        # content / parts が空なら text に触らずエラーにする
+        if not getattr(cand, "content", None) or not cand.content.parts:
+            msg = "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+            # finish_reason=MAX_TOKENS(2) の場合
+            if str(finish) == "2" or str(getattr(finish, "name", "")).endswith("MAX_TOKENS"):
+                msg += (
+                    "理由：出力トークンの上限(MAX_TOKENS)に達したため、"
+                    "JSON を最後まで生成できませんでした。\n"
+                    "→ 質問や補足テキストを短くするか、求める内容をもう少し簡潔にしてください。"
+                )
+            else:
+                msg += f"finish_reason={finish} のため途中で停止しました。\n"
+                msg += "→ 入力を短くする・過激な表現を避けるなどして再実行してください。"
+            return msg
+
+        # ここで初めて text を読む
+        raw = cand.content.parts[0].text.strip()
 
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            # 生の応答も返してデバッグしやすく
             snippet = raw[:500]
             return (
                 "【エラー】MAGI結果のJSONを正しく受信できませんでした。\n"
@@ -426,7 +450,11 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
         return data
 
     except ResourceExhausted:
-        return "【エラー】Gemini のリソース上限に達しました（MAGI複合分析）。時間をおいて再実行してください。"
+        return (
+            "【エラー】Gemini のリソース上限に達しました（MAGI複合分析）。\n"
+            "同じAPIキーでの呼び出し回数や1日の無料クォータ超過の可能性があります。\n"
+            "時間をおいてから再実行してみてください。"
+        )
     except GoogleAPIError as e:
         return f"【エラー】Gemini API複合分析で問題が発生しました: {str(e)}"
     except Exception as e:
@@ -522,7 +550,7 @@ input_mode = st.radio(
 )
 
 col1, col2 = st.columns(2)
-uploaded_file: Optional[st.runtime.uploaded_file_manager.UploadedFile] = None
+uploaded_file: Optional[Any] = None
 image_for_report: Optional[Image.Image] = None
 media_type: Optional[str] = None
 
@@ -621,6 +649,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         result = call_magi_all(context)
 
     if isinstance(result, str):
+        # ここに来る場合はエラー文（MAX_TOKENSやJSONエラーなど）
         st.error(result)
         st.stop()
 
@@ -645,7 +674,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                     <div class="magi-vote-label-jp">{dec["jp"]}</div>
                   </div>
                   <div class="magi-panel-summary">
-                    {clean_text_for_display(a.get("summary", "")).replace("\n", "<br>")}
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
                   </div>
                 </div>
                 ''',
@@ -669,7 +698,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                     <div class="magi-vote-label-jp">{dec["jp"]}</div>
                   </div>
                   <div class="magi-panel-summary">
-                    {clean_text_for_display(a.get("summary", "")).replace("\n", "<br>")}
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
                   </div>
                 </div>
                 ''',
@@ -695,7 +724,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                     <div class="magi-vote-label-jp">{dec["jp"]}</div>
                   </div>
                   <div class="magi-panel-summary">
-                    {clean_text_for_display(a.get("summary", "")).replace("\n", "<br>")}
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
                   </div>
                 </div>
                 ''',
@@ -719,7 +748,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                     <div class="magi-vote-label-jp">{dec["jp"]}</div>
                   </div>
                   <div class="magi-panel-summary">
-                    {clean_text_for_display(a.get("summary", "")).replace("\n", "<br>")}
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
                   </div>
                 </div>
                 ''',
@@ -743,7 +772,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         aggregated.get("details", "") or aggregated.get("summary", "")
     )
     st.markdown(
-        f'<div class="magi-aggregator">{agg_html.replace("\n", "<br>")}</div>',
+        f'<div class="magi-aggregator">{agg_html.replace("\\n", "<br>")}</div>',
         unsafe_allow_html=True,
     )
 
