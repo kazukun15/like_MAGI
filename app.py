@@ -203,7 +203,7 @@ st.markdown(
             gap: 8px;
         }
         .magi-header-title {
-            font-size: 16px;
+            fontサイズ: 16px;
         }
         .magi-panel {
             font-size: 12px;
@@ -268,7 +268,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # レスポンス形式は各呼び出し側で text/plain に固定
+    # レスポンス形式は各呼び出し側で処理
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -296,13 +296,11 @@ def extract_text_from_response(resp) -> Optional[str]:
     - ダメなら candidates → content.parts から text を集める
     - MAX_TOKENS や SAFETY の終了理由があれば、それに応じたエラーメッセージを返す
     """
-    # まずは素直に resp.text を試す（ここで ValueError が出るケースがある）
     try:
         t = (getattr(resp, "text", "") or "").strip()
         if t:
             return t
     except ValueError:
-        # ここに来たら candidates から手で取り出す
         pass
 
     texts: list[str] = []
@@ -361,7 +359,6 @@ def describe_image_with_gemini(img: Image.Image) -> str:
             [prompt, img],
             generation_config={
                 "max_output_tokens": 256,
-                "response_mime_type": "text/plain",
             },
         )
         text = extract_text_from_response(resp)
@@ -386,7 +383,6 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
             [prompt, {"mime_type": mime_type, "data": audio_bytes}],
             generation_config={
                 "max_output_tokens": 2048,
-                "response_mime_type": "text/plain",
             },
         )
         text = extract_text_from_response(resp)
@@ -398,12 +394,81 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# MAGI テキスト生成（1回呼び出し・プレーンテキスト）
+# MAGI テキスト生成（プレーンテキスト）
 # ======================================================
-def call_magi_plain(context: Dict[str, Any]) -> Optional[str]:
+def build_sys_prompt(mode_label: str) -> str:
     """
-    MAGI 4視点＋統合を、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
-    JSONは使わない。
+    ラジオボタンで選択されたモードに応じて、
+    どのエージェントブロックを出力させるかを制御する。
+    """
+    full = mode_label.startswith("フル")
+    use_logic = full or ("Logic" in mode_label)
+    use_human = full or ("Human" in mode_label)
+    use_reality = full or ("Reality" in mode_label)
+    use_media = full or ("Media" in mode_label)
+
+    header = f"""
+あなたは NERV の MAGI システム全体を模した統合AIです。
+現在のモード: {mode_label}
+ユーザーから与えられた情報をもとに、指定されたエージェント視点でコメントと判定を出し、
+最後に統合MAGIとしての結論を書いてください。
+出力は、以下のフォーマットだけを使って日本語で行います。
+"""
+
+    blocks = []
+
+    if use_logic:
+        blocks.append(
+            """【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内"""
+        )
+
+    if use_human:
+        blocks.append(
+            """【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内"""
+        )
+
+    if use_reality:
+        blocks.append(
+            """【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内"""
+        )
+
+    if use_media:
+        blocks.append(
+            """【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内"""
+        )
+
+    # 統合サマリー・詳細は常に出力
+    blocks.append(
+        """【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる"""
+    )
+    blocks.append(
+        """【MAGI-統合詳細】
+統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く"""
+    )
+
+    constraints = """
+[制約]
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
+"""
+
+    return header + "\n\n" + "\n\n".join(blocks) + "\n\n" + constraints
+
+
+def call_magi_plain(context: Dict[str, Any], mode_label: str) -> Optional[str]:
+    """
+    MAGI 4視点＋統合、もしくは選択された単独エージェント＋統合を
+    決め打ちフォーマットのテキストとして返す。
     """
     model = get_gemini_model()
 
@@ -414,38 +479,7 @@ def call_magi_plain(context: Dict[str, Any]) -> Optional[str]:
         "image_description": trim_text(context.get("image_description", "")),
     }
 
-    sys_prompt = """
-あなたは NERV の MAGI システム全体を模した統合AIです。
-Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
-以下のフォーマットだけを使って日本語で出力してください。
-
-【Magi-Logic】
-判定: 可決 または 保留 または 否決 のいずれか
-要約: 2〜3文、合計120文字以内
-
-【Magi-Human】
-判定: 可決 または 保留 または 否決 のいずれか
-要約: 2〜3文、合計120文字以内
-
-【Magi-Reality】
-判定: 可決 または 保留 または 否決 のいずれか
-要約: 2〜3文、合計120文字以内
-
-【Magi-Media】
-判定: 可決 または 保留 または 否決 のいずれか
-要約: 2〜3文、合計120文字以内
-
-【MAGI-統合サマリー】
-全体としての結論を150文字以内でまとめる
-
-【MAGI-統合詳細】
-統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く
-
-[制約]
-- 箇条書き（・や番号付きリスト）は使わない。
-- 上記の見出し・ラベル以外の文言や飾りは追加しない。
-- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
-"""
+    sys_prompt = build_sys_prompt(mode_label)
 
     ctx_text = (
         "【ユーザーからの情報】\n"
@@ -473,7 +507,6 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
             generation_config={
                 "max_output_tokens": 512,
                 "temperature": 0.6,
-                "response_mime_type": "text/plain",
             },
         )
     except ResourceExhausted:
@@ -491,13 +524,6 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
 # テキスト → 擬似エージェント構造へのパース
 # ======================================================
 def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
-    """
-    call_magi_plain の出力テキストを
-    - agents: logic/human/reality/media
-    - aggregated: summary/details
-    に分解する。
-    JSON ではないので、見出しベースの簡易パースを行う。
-    """
     agents: Dict[str, Any] = {}
     aggregated: Dict[str, str] = {"summary": "", "details": ""}
 
@@ -521,7 +547,6 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
         elif name == "MAGI-統合詳細":
             aggregated["details"] = body.strip()
 
-    # 何もパースできなかった場合は生テキストを統合詳細として扱う
     if not agents and not (aggregated["summary"] or aggregated["details"]):
         aggregated["details"] = text.strip()
 
@@ -529,12 +554,6 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
 
 
 def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
-    """
-    各エージェントブロックの中から
-    - 判定: 可決/保留/否決
-    - 要約: 以下の行
-    を抜き出す。
-    """
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     decision_jp = "保留"
     summary = ""
@@ -662,6 +681,19 @@ user_question = st.text_area(
     height=120,
 )
 
+st.markdown("#### 分析するMAGIエージェント")
+analysis_mode = st.radio(
+    "どのエージェントにコメントさせるか選択してください。",
+    [
+        "フル（4エージェント＋統合）",
+        "Magi-Logicのみ",
+        "Magi-Humanのみ",
+        "Magi-Realityのみ",
+        "Magi-Mediaのみ",
+    ],
+    index=0,
+)
+
 st.markdown("#### 媒体入力モード（任意）")
 input_mode = st.radio(
     "画像・音声の入力方法を選択してください。",
@@ -761,7 +793,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.stop()
 
     with st.spinner("MAGI 分析を実行中..."):
-        magi_text = call_magi_plain(context)
+        magi_text = call_magi_plain(context, analysis_mode)
 
     if magi_text is None:
         st.error(
@@ -775,7 +807,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.error(magi_text)
         st.stop()
 
-    # 解析テキストをパース
     agents, aggregated = parse_magi_text(magi_text)
 
     st.success("MAGI の分析が完了しました。")
@@ -903,6 +934,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
 
 else:
     st.info(
-        "下のボタンを押すと、MAGI が4視点＋統合のコメントをテキスト形式で生成します。\n"
-        "最初はシンプルな質問だけで試すと動作確認しやすいです。"
+        "下のボタンを押すと、選択したMAGIエージェントがコメントと判定を出し、統合MAGIが結論をまとめます。\n"
+        "まずは「Magi-Logicのみ」など単独エージェントで試すと動作確認しやすいです。"
     )
