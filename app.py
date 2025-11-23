@@ -268,6 +268,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
+    # ここでは model_name だけ指定し、レスポンス形式は各 call で text/plain に固定する
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -277,6 +278,7 @@ def get_gemini_model():
 def clean_text_for_display(text: str) -> str:
     if not text:
         return ""
+    # Markdown の * がそのまま出ると崩れるので軽く変換
     return text.replace("*", "・")
 
 
@@ -298,8 +300,15 @@ def describe_image_with_gemini(img: Image.Image) -> str:
         "心理的な印象も1文で添えてください。"
     )
     try:
-        resp = model.generate_content([prompt, img])
-        return clean_text_for_display((resp.text or "").strip())
+        resp = model.generate_content(
+            [prompt, img],
+            generation_config={
+                "max_output_tokens": 256,
+                "response_mime_type": "text/plain",
+            },
+        )
+        text = (resp.text or "").strip()
+        return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】画像解析に失敗しました: {str(e)}"
 
@@ -315,9 +324,14 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
     )
     try:
         resp = model.generate_content(
-            [prompt, {"mime_type": mime_type, "data": audio_bytes}]
+            [prompt, {"mime_type": mime_type, "data": audio_bytes}],
+            generation_config={
+                "max_output_tokens": 2048,
+                "response_mime_type": "text/plain",
+            },
         )
-        return clean_text_for_display((resp.text or "").strip())
+        text = (resp.text or "").strip()
+        return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】音声解析に失敗しました: {str(e)}"
 
@@ -325,7 +339,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 # ======================================================
 # MAGI テキスト生成（1回呼び出し・プレーンテキスト）
 # ======================================================
-def call_magi_plain(context: Dict[str, Any]) -> str | None:
+def call_magi_plain(context: Dict[str, Any]) -> Optional[str]:
     """
     MAGI 4視点＋統合を、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
     JSONは使わない。
@@ -343,8 +357,6 @@ def call_magi_plain(context: Dict[str, Any]) -> str | None:
 あなたは NERV の MAGI システム全体を模した統合AIです。
 Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
 以下のフォーマットだけを使って日本語で出力してください。
-
-[重要：出力フォーマット（この通りに出力すること）]
 
 【Magi-Logic】
 判定: 可決 または 保留 または 否決 のいずれか
@@ -377,31 +389,57 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
     ctx_text = (
         "【ユーザーからの情報】\n"
         + f"質問: {trimmed_context['user_question']}\n"
-        + (f"テキスト入力: {trimmed_context['text_input']}\n" if trimmed_context["text_input"] else "")
-        + (f"音声文字起こし: {trimmed_context['audio_transcript']}\n" if trimmed_context["audio_transcript"] else "")
-        + (f"画像説明: {trimmed_context['image_description']}\n" if trimmed_context["image_description"] else "")
+        + (
+            f"テキスト入力: {trimmed_context['text_input']}\n"
+            if trimmed_context["text_input"]
+            else ""
+        )
+        + (
+            f"音声文字起こし: {trimmed_context['audio_transcript']}\n"
+            if trimmed_context["audio_transcript"]
+            else ""
+        )
+        + (
+            f"画像説明: {trimmed_context['image_description']}\n"
+            if trimmed_context["image_description"]
+            else ""
+        )
     )
 
     try:
+        # ★ ここで必ず text/plain を指定し、JSON を吐かせない
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 640,  # 出力をかなり絞る
+                "max_output_tokens": 512,
+                "temperature": 0.6,
+                "response_mime_type": "text/plain",
             },
         )
-
-        if not resp.candidates or not resp.candidates[0].content or not resp.candidates[0].content.parts:
-            return None
-
-        text = (resp.text or "").strip()
-        return text if text else None
-
     except ResourceExhausted:
         return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
     except GoogleAPIError as e:
         return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
     except Exception as e:
         return f"【エラー】MAGI分析中に想定外のエラーが発生しました: {str(e)}"
+
+    # ---- ここからはレスポンスのテキスト抽出を安全側に倒す ----
+    text = (getattr(resp, "text", "") or "").strip()
+
+    if not text:
+        # text プロパティが空でも、candidates からテキストを寄せ集める
+        text_parts = []
+        for cand in getattr(resp, "candidates", []) or []:
+            content = getattr(cand, "content", None)
+            if not content:
+                continue
+            for part in getattr(content, "parts", []) or []:
+                part_text = getattr(part, "text", None)
+                if part_text:
+                    text_parts.append(part_text)
+        text = "\n".join(text_parts).strip()
+
+    return text or None
 
 
 # ======================================================
@@ -418,24 +456,12 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
     agents: Dict[str, Any] = {}
     aggregated: Dict[str, str] = {"summary": "", "details": ""}
 
-    # セクションを切り出すためのラベル
-    sections = [
-        "Magi-Logic",
-        "Magi-Human",
-        "Magi-Reality",
-        "Magi-Media",
-        "MAGI-統合サマリー",
-        "MAGI-統合詳細",
-    ]
-
-    # 見出しごとにsplit
     pattern = r"^【(Magi-Logic|Magi-Human|Magi-Reality|Magi-Media|MAGI-統合サマリー|MAGI-統合詳細)】"
     parts = re.split(pattern, text, flags=re.MULTILINE)
 
-    # re.split の戻り方：
+    # re.split の戻り:
     # [前置き, セクション名1, 内容1, セクション名2, 内容2, ...]
-    # 前置きは通常空かゴミなので捨てる
-    it = iter(parts[1:])  # 最初の要素は前置き
+    it = iter(parts[1:])
 
     for name, body in zip(it, it):
         body = body.strip()
@@ -451,6 +477,11 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
             aggregated["summary"] = body.replace("\n", " ").strip()
         elif name == "MAGI-統合詳細":
             aggregated["details"] = body.strip()
+
+    # 万一フォーマットを完全に守ってくれなかったときのフォールバック：
+    # エージェントも統合も空なら、生テキストをそのまま統合詳細として扱う
+    if not agents and not (aggregated["summary"] or aggregated["details"]):
+        aggregated["details"] = text.strip()
 
     return agents, aggregated
 
@@ -468,7 +499,6 @@ def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
 
     for line in lines:
         if line.startswith("判定"):
-            # 例: "判定: 可決"
             if "可決" in line:
                 decision_jp = "可決"
             elif "否決" in line:
@@ -476,10 +506,8 @@ def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
             elif "保留" in line:
                 decision_jp = "保留"
         elif line.startswith("要約"):
-            # 例: "要約: 〜〜"
             summary = line.replace("要約", "").replace(":", "").replace("：", "").strip()
         else:
-            # 要約行以外は、summaryがまだ短ければ追加
             if summary:
                 summary += " " + line
 
@@ -702,6 +730,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.stop()
 
     if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
+        # call_magi_plain 内部で作ったエラーメッセージ
         st.error(magi_text)
         st.stop()
 
