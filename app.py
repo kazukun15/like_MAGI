@@ -1,6 +1,6 @@
 import os
 import io
-import json
+import re
 from typing import Dict, Any, Optional
 
 import streamlit as st
@@ -10,18 +10,17 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 import docx
 
-
 # ======================================================
 # ページ設定
 # ======================================================
 st.set_page_config(
-    page_title="MAGI風マルチAI分析システム（Gemini版・ライト）",
+    page_title="MAGI風マルチAI分析システム（テキスト簡易版）",
     page_icon="🧬",
     layout="wide",
 )
 
 # ------------------------------------------------------
-# MAGI風 カスタムCSS（スマホ対応・投票表示つき）
+# MAGI風 カスタムCSS（スマホ対応）
 # ------------------------------------------------------
 st.markdown(
     """
@@ -122,7 +121,7 @@ st.markdown(
         box-shadow: 0 0 16px rgba(195,107,255,0.4);
     }
     .magi-panel-summary {
-        margin-top: 8px;
+        margin-top: 4px;
         font-size: 13px;
         line-height: 1.6;
         color: #e3e7ff;
@@ -133,9 +132,9 @@ st.markdown(
         flex-direction: column;
         align-items: flex-start;
         justify-content: center;
-        padding: 6px 10px;
+        padding: 4px 8px;
         border-radius: 6px;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
         font-size: 11px;
     }
     .magi-vote-label-en {
@@ -227,7 +226,7 @@ st.markdown(
         <div class="magi-header-left">
             <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
             <div class="magi-header-sub">
-                GEMINI 2.5 FLASH · LIGHTWEIGHT MULTI-VIEW ANALYSIS
+                GEMINI 2.5 FLASH · TEXT-ONLY LIGHTWEIGHT ANALYSIS
             </div>
         </div>
         <div class="magi-status">
@@ -243,8 +242,8 @@ st.markdown(
     """
     <div class="magi-info-card">
     <b>概要：</b> テキスト・画像・音声などを入力すると、<b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> が
-    それぞれ短くコメントと判定を出し、最後に統合MAGIが結論をまとめます。<br>
-    出力量を絞った<b>ライト版MAGI</b>のため、Geminiの制限にかかりにくい構成です。
+    それぞれ短いコメントと判定を出し、最後に統合MAGIが結論をまとめます。<br>
+    出力はプレーンテキスト形式のみとし、JSON解析を行わないことで安定性を優先した簡易版です。
     </div>
     """,
     unsafe_allow_html=True,
@@ -273,7 +272,7 @@ def get_gemini_model():
 
 
 # ======================================================
-# 共通ユーティリティ
+# ユーティリティ
 # ======================================================
 def clean_text_for_display(text: str) -> str:
     if not text:
@@ -281,8 +280,7 @@ def clean_text_for_display(text: str) -> str:
     return text.replace("*", "・")
 
 
-def trim_text(s: str, max_chars: int = 800) -> str:
-    """入力テキストをさらに短く 800 文字に制限"""
+def trim_text(s: str, max_chars: int = 600) -> str:
     if not s:
         return ""
     if len(s) <= max_chars:
@@ -325,9 +323,13 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# フォールバック：統合MAGIのみ（agentsなし）
+# MAGI テキスト生成（1回呼び出し・プレーンテキスト）
 # ======================================================
-def call_magi_aggregated_only(context: Dict[str, Any]) -> Dict[str, Any] | str:
+def call_magi_plain(context: Dict[str, Any]) -> str | None:
+    """
+    MAGI 4視点＋統合を、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
+    JSONは使わない。
+    """
     model = get_gemini_model()
 
     trimmed_context = {
@@ -338,184 +340,161 @@ def call_magi_aggregated_only(context: Dict[str, Any]) -> Dict[str, Any] | str:
     }
 
     sys_prompt = """
-あなたは NERV の MAGI 統合AI を模したシステムです。
-Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点を内部で考慮しつつも、
-出力は「統合MAGIとしての結論」のみを JSON で返してください。
+あなたは NERV の MAGI システム全体を模した統合AIです。
+Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
+以下のフォーマットだけを使って日本語で出力してください。
+
+[重要：出力フォーマット（この通りに出力すること）]
+
+【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる
+
+【MAGI-統合詳細】
+統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く
 
 [制約]
-- 出力は必ず JSON のみ
-- aggregated.summary: 200文字以内
-- aggregated.details: 600文字以内、3〜5段落程度
-- 箇条書きは使わず、通常の日本語文のみ
-
-[JSON構造]
-
-{
-  "aggregated": {
-    "summary": "MAGI統合としての全体サマリー（200文字以内、日本語）",
-    "details": "MAGI統合の詳細レポート（600文字以内、日本語）"
-  }
-}
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
 """
-    ctx_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
+
+    ctx_text = (
+        "【ユーザーからの情報】\n"
+        + f"質問: {trimmed_context['user_question']}\n"
+        + (f"テキスト入力: {trimmed_context['text_input']}\n" if trimmed_context["text_input"] else "")
+        + (f"音声文字起こし: {trimmed_context['audio_transcript']}\n" if trimmed_context["audio_transcript"] else "")
+        + (f"画像説明: {trimmed_context['image_description']}\n" if trimmed_context["image_description"] else "")
+    )
 
     try:
         resp = model.generate_content(
-            [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
+            [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 512,
-                "response_mime_type": "application/json",
+                "max_output_tokens": 640,  # 出力をかなり絞る
             },
         )
 
         if not resp.candidates or not resp.candidates[0].content or not resp.candidates[0].content.parts:
-            return (
-                "【エラー】Gemini が統合MAGIのテキストを返しませんでした。\n"
-                "内容が長すぎるか、一部が安全フィルタにかかった可能性があります。"
-            )
+            return None
 
-        raw = resp.candidates[0].content.parts[0].text.strip()
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            snippet = raw[:400]
-            return (
-                "【エラー】統合MAGIのJSONを正しく受信できませんでした。\n"
-                f"JSONDecodeError: {str(e)}\n"
-                f"先頭部分:\n{snippet}"
-            )
-
-        # agents は空 dict として補完
-        return {"agents": {}, "aggregated": data.get("aggregated", {})}
+        text = (resp.text or "").strip()
+        return text if text else None
 
     except ResourceExhausted:
-        return (
-            "【エラー】Gemini のリソース上限に達しました（統合MAGI）。\n"
-            "一定時間を空けてから再度お試しください。"
-        )
+        return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
     except GoogleAPIError as e:
-        return f"【エラー】Gemini API（統合MAGI）で問題が発生しました: {str(e)}"
+        return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
     except Exception as e:
-        return f"【エラー】統合MAGI分析中に想定外のエラーが発生しました: {str(e)}"
+        return f"【エラー】MAGI分析中に想定外のエラーが発生しました: {str(e)}"
 
 
 # ======================================================
-# メイン：4エージェント＋統合（ライト版）
+# テキスト → 擬似エージェント構造へのパース
 # ======================================================
-def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
+def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
     """
-    1回の Gemini 呼び出しで、
-    ・4エージェント（summary + decision）
-    ・統合MAGI（summary + details）
-    を JSON 形式で返してもらう。
-    出力はかなりコンパクト。
-    失敗したら統合のみのフォールバックを試す。
+    call_magi_plain の出力テキストを
+    - agents: logic/human/reality/media
+    - aggregated: summary/details
+    に分解する。
+    JSON ではないので、見出しベースの簡易パースを行う。
     """
-    model = get_gemini_model()
+    agents: Dict[str, Any] = {}
+    aggregated: Dict[str, str] = {"summary": "", "details": ""}
 
-    trimmed_context = {
-        "user_question": trim_text(context.get("user_question", "")),
-        "text_input": trim_text(context.get("text_input", "")),
-        "audio_transcript": trim_text(context.get("audio_transcript", "")),
-        "image_description": trim_text(context.get("image_description", "")),
-    }
+    # セクションを切り出すためのラベル
+    sections = [
+        "Magi-Logic",
+        "Magi-Human",
+        "Magi-Reality",
+        "Magi-Media",
+        "MAGI-統合サマリー",
+        "MAGI-統合詳細",
+    ]
 
-    sys_prompt = """
-あなたは NERV の MAGI システム全体を同時にシミュレートする統合 AI です。
-Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
-それらを統合する MAGI 統合 AI の役割をすべて一度に出力してください。
+    # 見出しごとにsplit
+    pattern = r"^【(Magi-Logic|Magi-Human|Magi-Reality|Magi-Media|MAGI-統合サマリー|MAGI-統合詳細)】"
+    parts = re.split(pattern, text, flags=re.MULTILINE)
 
-[重要：出力量の制限（必ず守ること）]
+    # re.split の戻り方：
+    # [前置き, セクション名1, 内容1, セクション名2, 内容2, ...]
+    # 前置きは通常空かゴミなので捨てる
+    it = iter(parts[1:])  # 最初の要素は前置き
 
-- agents.*.summary
-  - 最大 2〜3文
-  - 最大 100〜120 文字
-- aggregated.summary
-  - 最大 150 文字
-- aggregated.details
-  - 最大 500 文字
-  - 2〜4 段落程度に収める
-- 箇条書き・記号は使わず、通常の日本語文だけにする
+    for name, body in zip(it, it):
+        body = body.strip()
+        if name == "Magi-Logic":
+            agents["logic"] = parse_agent_block("Magi-Logic（論理・構造担当）", body)
+        elif name == "Magi-Human":
+            agents["human"] = parse_agent_block("Magi-Human（感情・人間面担当）", body)
+        elif name == "Magi-Reality":
+            agents["reality"] = parse_agent_block("Magi-Reality（現実運用・リスク担当）", body)
+        elif name == "Magi-Media":
+            agents["media"] = parse_agent_block("Magi-Media（表現・印象担当）", body)
+        elif name == "MAGI-統合サマリー":
+            aggregated["summary"] = body.replace("\n", " ").strip()
+        elif name == "MAGI-統合詳細":
+            aggregated["details"] = body.strip()
 
-[JSON構造]
+    return agents, aggregated
 
-必ず次の構造の JSON のみを返し、それ以外のテキストは一切出力しないこと。
 
-{
-  "agents": {
-    "logic": {
-      "name_jp": "Magi-Logic（論理・構造担当）",
-      "summary": "このエージェント視点の要約（2〜3文、120文字以内、日本語）",
-      "decision_code": "Go または Hold または No-Go",
-      "decision_jp": "可決 または 保留 または 否決"
-    },
-    "human": {
-      "name_jp": "Magi-Human（感情・人間面担当）",
-      "summary": "...",
-      "decision_code": "...",
-      "decision_jp": "..."
-    },
-    "reality": {
-      "name_jp": "Magi-Reality（現実運用・リスク担当）",
-      "summary": "...",
-      "decision_code": "...",
-      "decision_jp": "..."
-    },
-    "media": {
-      "name_jp": "Magi-Media（表現・印象担当）",
-      "summary": "...",
-      "decision_code": "...",
-      "decision_jp": "..."
-    }
-  },
-  "aggregated": {
-    "summary": "MAGI統合としての全体サマリー（150文字以内、日本語）",
-    "details": "MAGI統合の詳細レポート（500文字以内、日本語）"
-  }
-}
+def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
+    """
+    各エージェントブロックの中から
+    - 判定: 可決/保留/否決
+    - 要約: 以下の行
+    を抜き出す。
+    """
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    decision_jp = "保留"
+    summary = ""
 
-[判断]
-- decision_code は必ず "Go" / "Hold" / "No-Go" のいずれか。
-- decision_jp はそれぞれ "可決" / "保留" / "否決" に対応させること。
-"""
-
-    ctx_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
-
-    try:
-        resp = model.generate_content(
-            [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
-            generation_config={
-                "max_output_tokens": 768,  # 出力上限をやや低めに（短文仕様）
-                "response_mime_type": "application/json",
-            },
-        )
-
-        # === 正常系チェック ===
-        if resp.candidates and resp.candidates[0].content and resp.candidates[0].content.parts:
-            raw = resp.candidates[0].content.parts[0].text.strip()
-            try:
-                data = json.loads(raw)
-                return data
-            except json.JSONDecodeError:
-                # ここでフォールバックへ
-                pass
+    for line in lines:
+        if line.startswith("判定"):
+            # 例: "判定: 可決"
+            if "可決" in line:
+                decision_jp = "可決"
+            elif "否決" in line:
+                decision_jp = "否決"
+            elif "保留" in line:
+                decision_jp = "保留"
+        elif line.startswith("要約"):
+            # 例: "要約: 〜〜"
+            summary = line.replace("要約", "").replace(":", "").replace("：", "").strip()
         else:
-            # finish_reason を見て情報メッセージ化しても良いが、まずはフォールバックへ
-            pass
+            # 要約行以外は、summaryがまだ短ければ追加
+            if summary:
+                summary += " " + line
 
-        # === フォールバック：統合のみ ===
-        return call_magi_aggregated_only(context)
+    decision_code = {
+        "可決": "Go",
+        "否決": "No-Go",
+        "保留": "Hold",
+    }.get(decision_jp, "Hold")
 
-    except ResourceExhausted:
-        return (
-            "【エラー】Gemini のリソース上限に達しました（MAGI複合分析）。\n"
-            "同じAPIキーでの呼び出し回数や1日の無料クォータ超過の可能性があります。\n"
-            "時間をおいてから再実行してみてください。"
-        )
-    except GoogleAPIError as e:
-        return f"【エラー】Gemini API複合分析で問題が発生しました: {str(e)}"
-    except Exception as e:
-        return f"【エラー】MAGI複合分析中に想定外のエラーが発生しました: {str(e)}"
+    return {
+        "name_jp": name_jp,
+        "summary": summary,
+        "decision_jp": decision_jp,
+        "decision_code": decision_code,
+    }
 
 
 def decision_to_css(decision_code: str) -> Dict[str, str]:
@@ -528,16 +507,17 @@ def decision_to_css(decision_code: str) -> Dict[str, str]:
 
 
 # ======================================================
-# Word レポート生成（ライト版）
+# Word レポート生成
 # ======================================================
 def build_word_report(
     context: Dict[str, Any],
     agents: Dict[str, Any],
     aggregated: Dict[str, Any],
+    magi_raw_text: str,
     image: Optional[Image.Image] = None,
 ) -> bytes:
     doc = docx.Document()
-    doc.add_heading("MAGI風マルチAI分析レポート（Gemini版・ライト）", level=1)
+    doc.add_heading("MAGI風マルチAI分析レポート（テキスト簡易版）", level=1)
 
     # 第1章 入力情報
     doc.add_heading("第1章 入力情報", level=2)
@@ -559,8 +539,8 @@ def build_word_report(
         doc.add_picture(img_stream, width=docx.shared.Inches(3))
 
     # 第2章 各MAGIエージェントの要約
+    doc.add_heading("第2章 各MAGIエージェントの要約と判定", level=2)
     if agents:
-        doc.add_heading("第2章 各MAGIエージェントの要約と判定", level=2)
         for key in ["logic", "human", "reality", "media"]:
             if key not in agents:
                 continue
@@ -570,8 +550,7 @@ def build_word_report(
             doc.add_paragraph(f"判定：{a.get('decision_jp', '')}")
             doc.add_paragraph(f"要約：{clean_text_for_display(a.get('summary', ''))}")
     else:
-        doc.add_heading("第2章 各MAGIエージェントの要約", level=2)
-        doc.add_paragraph("今回の実行では、統合MAGIのみ出力されています。")
+        doc.add_paragraph("今回の実行では、MAGIエージェントの詳細出力は取得できませんでした。")
 
     # 第3章 MAGI統合AIの結論
     doc.add_heading("第3章 MAGI統合AIの結論・アクションプラン", level=2)
@@ -584,6 +563,11 @@ def build_word_report(
         doc.add_paragraph("【詳細】")
         for line in agg_details.splitlines():
             doc.add_paragraph(line)
+
+    # 付録：生テキスト
+    doc.add_heading("付録：MAGI生テキスト", level=2)
+    for line in magi_raw_text.splitlines():
+        doc.add_paragraph(line)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -681,7 +665,6 @@ if uploaded_file is not None:
         context["audio_transcript"] = transcript
 
     else:
-        # テキストファイルだけ簡易対応
         if (uploaded_file.type == "text/plain") or (
             isinstance(uploaded_file.name, str) and uploaded_file.name.lower().endswith(".txt")
         ):
@@ -693,10 +676,10 @@ if uploaded_file is not None:
             st.warning("対応していないファイル形式です。画像・音声・テキストファイルを使用してください。")
 
 # ======================================================
-# MAGI 複合分析
+# MAGI 分析実行
 # ======================================================
 st.markdown(
-    '<div class="magi-section-title">PROCESS · MAGI AGENT ANALYSIS</div><hr class="magi-divider">',
+    '<div class="magi-section-title">PROCESS · MAGI ANALYSIS</div><hr class="magi-divider">',
     unsafe_allow_html=True,
 )
 
@@ -707,15 +690,23 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.warning("最低でも質問・テキスト・媒体のいずれかが必要です。")
         st.stop()
 
-    with st.spinner("MAGI 複合分析を実行中..."):
-        result = call_magi_all(context)
+    with st.spinner("MAGI 分析を実行中..."):
+        magi_text = call_magi_plain(context)
 
-    if isinstance(result, str):
-        st.error(result)
+    if magi_text is None:
+        st.error(
+            "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+            "・内容が極端に長い\n・安全フィルタにかかる表現が含まれている\nなどの可能性があります。\n\n"
+            "一度、質問やテキストを短く・穏やかな表現にして再実行してみてください。"
+        )
         st.stop()
 
-    agents = result.get("agents", {}) or {}
-    aggregated = result.get("aggregated", {"summary": "", "details": ""})
+    if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
+        st.error(magi_text)
+        st.stop()
+
+    # 解析テキストをパース
+    agents, aggregated = parse_magi_text(magi_text)
 
     st.success("MAGI の分析が完了しました。")
 
@@ -824,6 +815,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         context=context,
         agents=agents,
         aggregated=aggregated,
+        magi_raw_text=magi_text,
         image=image_for_report,
     )
 
@@ -835,12 +827,12 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     st.download_button(
         "MAGIレポート（Word）をダウンロード",
         data=report_bytes,
-        file_name="MAGI分析レポート_Geminiライト.docx",
+        file_name="MAGI分析レポート_テキスト簡易版.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 else:
     st.info(
-        "下のボタンを押すと、ライト版MAGI（4エージェント＋統合）がコンパクトなレポートを生成します。\n"
-        "最初は「質問」だけ入れて試すのがおすすめです。"
+        "下のボタンを押すと、MAGI が4視点＋統合のコメントをテキスト形式で生成します。\n"
+        "最初はシンプルな質問だけで試すと動作確認しやすいです。"
     )
