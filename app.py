@@ -269,6 +269,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
+    # ここではデフォルト値だけ。実際の出力量は call_magi_all 側で上書き
     return genai.GenerativeModel(
         "gemini-2.5-flash",
         generation_config={"max_output_tokens": 1024},
@@ -285,7 +286,8 @@ def clean_text_for_display(text: str) -> str:
     return text.replace("*", "・")
 
 
-def trim_text(s: str, max_chars: int = 4000) -> str:
+def trim_text(s: str, max_chars: int = 1500) -> str:
+    """入力テキストを 1500 文字に制限して送り込む"""
     if not s:
         return ""
     if len(s) <= max_chars:
@@ -337,7 +339,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# 単一APIで MAGI 全員＋統合をまとめて呼び出す（JSON＋finish_reason対応）
+# 単一APIで MAGI 全員＋統合をまとめて呼び出す（短文仕様）
 # ======================================================
 def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
     """
@@ -375,7 +377,7 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
     - 「【重要ポイント】」: 2〜3文
     - 「【推奨アクション】」: 2〜3文
   - 全体の長さは 400〜600 文字以内
-  - 箇条書き（・や番号付きリスト）は使わず、通常の文章のみ
+  - 箇条書き（・や番号付きリスト）は使わず、通常の文章のみとする
 
 - aggregated.summary
   - 最大 200 文字
@@ -445,7 +447,7 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
         resp = model.generate_content(
             [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
             generation_config={
-                "max_output_tokens": 2048,         # 出力自体は余裕を持たせる
+                "max_output_tokens": 2048,   # 出力側の上限
                 "response_mime_type": "application/json",
             },
         )
@@ -456,6 +458,7 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
         cand = resp.candidates[0]
         finish = getattr(cand, "finish_reason", None)
 
+        # content / parts が空なら text に触らずエラーにする
         if not getattr(cand, "content", None) or not cand.content.parts:
             msg = "【エラー】Gemini が有効なテキストを返しませんでした。\n"
             if str(finish) == "2" or str(getattr(finish, "name", "")).endswith("MAX_TOKENS"):
@@ -494,7 +497,6 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
         return f"【エラー】Gemini API複合分析で問題が発生しました: {str(e)}"
     except Exception as e:
         return f"【エラー】MAGI複合分析中に想定外のエラーが発生しました: {str(e)}"
-
 
 
 def decision_to_css(decision_code: str) -> Dict[str, str]:
