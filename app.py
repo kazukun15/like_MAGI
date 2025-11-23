@@ -345,7 +345,7 @@ def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
     ・4エージェントの結果
     ・統合MAGIの結果
     を JSON 形式で返してもらう。
-    失敗時はエラー文の文字列を返す。
+    出力量をかなり制限して MAX_TOKENS を避ける版。
     """
     model = get_gemini_model()
 
@@ -361,79 +361,114 @@ def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
 Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
 それらを統合する MAGI 統合 AI の役割をすべて一度に出力してください。
 
-[重要]
-- 出力は必ず JSON 形式のみで返してください。
-- JSON以外の文字（説明文など）は出力しないでください。
-- キー名は以下の構造に厳密に従ってください。
+[重要：出力量の制限（必ず守ること）]
+
+各フィールドは必ず次の文字数／文数制限を守ってください。絶対に超えないでください。
+
+- agents.*.summary
+  - 最大 3 文
+  - 最大 120 文字程度
+
+- agents.*.full_report
+  - 構成は必ず次の3ブロックのみ：
+    - 「【要約】」: 1〜2文
+    - 「【重要ポイント】」: 2〜3文
+    - 「【推奨アクション】」: 2〜3文
+  - 全体の長さは 400〜600 文字以内
+  - 箇条書き（・や番号付きリスト）は使わず、通常の文章のみ
+
+- aggregated.summary
+  - 最大 200 文字
+
+- aggregated.details
+  - 最大 800 文字
+  - 3〜6 段落程度に収めること
+
+これらの制限を超えないように、内容は簡潔かつ要点のみに絞ってください。
 
 [JSON構造]
+
+出力は必ず次の構造の JSON のみとし、日本語のコメントや余計なテキストは一切含めないこと。
 
 {
   "agents": {
     "logic": {
       "name_jp": "Magi-Logic（論理・構造担当）",
-      "summary": "このエージェント視点の要約（2〜6行程度、日本語）",
-      "full_report": "詳細なレポート全文（見出し「【要約】」「【前提認識】」などを含む日本語テキスト）",
+      "summary": "このエージェント視点の要約（2〜3文、120文字以内、日本語）",
+      "full_report": "【要約】...【重要ポイント】...【推奨アクション】...（400〜600文字、日本語）",
       "decision_code": "Go または Hold または No-Go",
       "decision_jp": "可決 または 保留 または 否決"
     },
-    "human": { ... 同様 ... },
-    "reality": { ... 同様 ... },
-    "media": { ... 同様 ... }
+    "human": {
+      "name_jp": "Magi-Human（感情・人間面担当）",
+      "summary": "...",
+      "full_report": "...",
+      "decision_code": "...",
+      "decision_jp": "..."
+    },
+    "reality": {
+      "name_jp": "Magi-Reality（現実運用・リスク担当）",
+      "summary": "...",
+      "full_report": "...",
+      "decision_code": "...",
+      "decision_jp": "..."
+    },
+    "media": {
+      "name_jp": "Magi-Media（表現・印象担当）",
+      "summary": "...",
+      "full_report": "...",
+      "decision_code": "...",
+      "decision_jp": "..."
+    }
   },
   "aggregated": {
-    "summary": "MAGI統合としての全体サマリー（日本語）",
-    "details": "MAGI統合の詳細レポート（日本語。見出しを含んでもよい）"
+    "summary": "MAGI統合としての全体サマリー（200文字以内、日本語）",
+    "details": "MAGI統合の詳細レポート（800文字以内、日本語）"
   }
 }
 
 [各エージェントの役割]
 
-- logic: 論理・構造・因果関係に特化。問題の構造化、矛盾の指摘、実行ステップ整理。
-- human: 感情・心理・コミュニケーションに特化。関係者の感情、伝え方、メンタル面のリスク。
-- reality: 現実運用・コスト・リスク管理に特化。実現可能性、リソース、現場のボトルネック。
-- media: 画像・音声・テキストなど媒体表現に特化。印象、構図、表現の良し悪しと改善案。
+- logic: 論理・構造・因果関係に特化。問題の構造化、矛盾の指摘、実行ステップ整理を行う。
+- human: 感情・心理・コミュニケーションに特化。関係者の感情、伝え方、メンタル面のリスクを見る。
+- reality: 現実運用・コスト・リスク管理に特化。実現可能性、リソース、現場のボトルネックを見る。
+- media: 画像・音声・テキストなど媒体表現に特化。印象、構図、表現の良し悪しと改善案を見る。
 
 [判断]
 - decision_code は必ず "Go" / "Hold" / "No-Go" のいずれか。
-- decision_jp はそれぞれ "可決" / "保留" / "否決" に対応させてください。
+- decision_jp はそれぞれ "可決" / "保留" / "否決" に対応させること。
 """
 
     ctx_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
 
     try:
-        # JSONモード＋出力トークン増量
         resp = model.generate_content(
             [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
             generation_config={
-                "max_output_tokens": 2048,
+                "max_output_tokens": 2048,         # 出力自体は余裕を持たせる
                 "response_mime_type": "application/json",
             },
         )
 
-        # candidates の有無をチェック
         if not resp.candidates:
             return "【エラー】Gemini から候補が返されませんでした。（candidates が空です）"
 
         cand = resp.candidates[0]
         finish = getattr(cand, "finish_reason", None)
 
-        # content / parts が空なら text に触らずエラーにする
         if not getattr(cand, "content", None) or not cand.content.parts:
             msg = "【エラー】Gemini が有効なテキストを返しませんでした。\n"
-            # finish_reason=MAX_TOKENS(2) の場合
             if str(finish) == "2" or str(getattr(finish, "name", "")).endswith("MAX_TOKENS"):
                 msg += (
                     "理由：出力トークンの上限(MAX_TOKENS)に達したため、"
                     "JSON を最後まで生成できませんでした。\n"
-                    "→ 質問や補足テキストを短くするか、求める内容をもう少し簡潔にしてください。"
+                    "→ 質問や補足テキストを、さらに短くして再実行してください。"
                 )
             else:
                 msg += f"finish_reason={finish} のため途中で停止しました。\n"
                 msg += "→ 入力を短くする・過激な表現を避けるなどして再実行してください。"
             return msg
 
-        # ここで初めて text を読む
         raw = cand.content.parts[0].text.strip()
 
         try:
@@ -459,6 +494,7 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
         return f"【エラー】Gemini API複合分析で問題が発生しました: {str(e)}"
     except Exception as e:
         return f"【エラー】MAGI複合分析中に想定外のエラーが発生しました: {str(e)}"
+
 
 
 def decision_to_css(decision_code: str) -> Dict[str, str]:
