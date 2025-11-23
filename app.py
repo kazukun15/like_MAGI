@@ -268,7 +268,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # ここでは model_name だけ指定し、レスポンス形式は各 call で text/plain に固定する
+    # レスポンス形式は各呼び出し側で text/plain に固定
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -278,7 +278,6 @@ def get_gemini_model():
 def clean_text_for_display(text: str) -> str:
     if not text:
         return ""
-    # Markdown の * がそのまま出ると崩れるので軽く変換
     return text.replace("*", "・")
 
 
@@ -288,6 +287,64 @@ def trim_text(s: str, max_chars: int = 600) -> str:
     if len(s) <= max_chars:
         return s
     return s[:max_chars] + "\n…（長文のためここで省略）"
+
+
+def extract_text_from_response(resp) -> Optional[str]:
+    """
+    google.generativeai のレスポンスから、できるだけ安全にテキストを取り出す。
+    - resp.text が使えればそれを使う（ValueError は握りつぶす）
+    - ダメなら candidates → content.parts から text を集める
+    - MAX_TOKENS や SAFETY の終了理由があれば、それに応じたエラーメッセージを返す
+    """
+    # まずは素直に resp.text を試す（ここで ValueError が出るケースがある）
+    try:
+        t = (getattr(resp, "text", "") or "").strip()
+        if t:
+            return t
+    except ValueError:
+        # ここに来たら candidates から手で取り出す
+        pass
+
+    texts: list[str] = []
+    max_tokens_hit = False
+    safety_block = False
+
+    for cand in getattr(resp, "candidates", []) or []:
+        finish_reason = getattr(cand, "finish_reason", None)
+        if finish_reason == "MAX_TOKENS":
+            max_tokens_hit = True
+        if finish_reason == "SAFETY":
+            safety_block = True
+
+        content = getattr(cand, "content", None)
+        if not content:
+            continue
+
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                texts.append(part_text)
+
+    if texts:
+        return "\n".join(texts).strip()
+
+    if max_tokens_hit:
+        return (
+            "【エラー】Gemini の出力トークン上限(MAX_TOKENS)に達したため、"
+            "テキストを最後まで生成できませんでした。質問や補足テキストを短くして再実行してください。"
+        )
+    if safety_block:
+        return (
+            "【エラー】Gemini の安全フィルタにより出力がブロックされました。\n"
+            "表現を少し穏やかにする・個人情報や過激な表現を避けるなどして再実行してください。"
+        )
+
+    pf = getattr(resp, "prompt_feedback", None)
+    block_reason = getattr(pf, "block_reason", None) if pf else None
+    if block_reason:
+        return f"【エラー】Gemini がテキストを返しませんでした（block_reason: {block_reason}）。"
+
+    return None
 
 
 # ======================================================
@@ -307,7 +364,9 @@ def describe_image_with_gemini(img: Image.Image) -> str:
                 "response_mime_type": "text/plain",
             },
         )
-        text = (resp.text or "").strip()
+        text = extract_text_from_response(resp)
+        if not text:
+            return "【エラー】Gemini が画像の説明テキストを返しませんでした。"
         return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】画像解析に失敗しました: {str(e)}"
@@ -330,7 +389,9 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
                 "response_mime_type": "text/plain",
             },
         )
-        text = (resp.text or "").strip()
+        text = extract_text_from_response(resp)
+        if not text:
+            return "【エラー】Gemini が音声の文字起こしテキストを返しませんでした。"
         return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】音声解析に失敗しました: {str(e)}"
@@ -407,7 +468,6 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
     )
 
     try:
-        # ★ ここで必ず text/plain を指定し、JSON を吐かせない
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
@@ -423,23 +483,8 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
     except Exception as e:
         return f"【エラー】MAGI分析中に想定外のエラーが発生しました: {str(e)}"
 
-    # ---- ここからはレスポンスのテキスト抽出を安全側に倒す ----
-    text = (getattr(resp, "text", "") or "").strip()
-
-    if not text:
-        # text プロパティが空でも、candidates からテキストを寄せ集める
-        text_parts = []
-        for cand in getattr(resp, "candidates", []) or []:
-            content = getattr(cand, "content", None)
-            if not content:
-                continue
-            for part in getattr(content, "parts", []) or []:
-                part_text = getattr(part, "text", None)
-                if part_text:
-                    text_parts.append(part_text)
-        text = "\n".join(text_parts).strip()
-
-    return text or None
+    text = extract_text_from_response(resp)
+    return text
 
 
 # ======================================================
@@ -459,8 +504,6 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
     pattern = r"^【(Magi-Logic|Magi-Human|Magi-Reality|Magi-Media|MAGI-統合サマリー|MAGI-統合詳細)】"
     parts = re.split(pattern, text, flags=re.MULTILINE)
 
-    # re.split の戻り:
-    # [前置き, セクション名1, 内容1, セクション名2, 内容2, ...]
     it = iter(parts[1:])
 
     for name, body in zip(it, it):
@@ -478,8 +521,7 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
         elif name == "MAGI-統合詳細":
             aggregated["details"] = body.strip()
 
-    # 万一フォーマットを完全に守ってくれなかったときのフォールバック：
-    # エージェントも統合も空なら、生テキストをそのまま統合詳細として扱う
+    # 何もパースできなかった場合は生テキストを統合詳細として扱う
     if not agents and not (aggregated["summary"] or aggregated["details"]):
         aggregated["details"] = text.strip()
 
@@ -730,7 +772,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.stop()
 
     if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
-        # call_magi_plain 内部で作ったエラーメッセージ
         st.error(magi_text)
         st.stop()
 
