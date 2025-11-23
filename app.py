@@ -336,7 +336,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# 単一APIで MAGI 全員＋統合をまとめて呼び出す
+# 単一APIで MAGI 全員＋統合をまとめて呼び出す（JSON強制）
 # ======================================================
 def call_magi_all(context: Dict[str, Any]) -> Dict[str, Any] | str:
     """
@@ -401,19 +401,28 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4エージェントと、
     ctx_text = json.dumps(trimmed_context, ensure_ascii=False, indent=2)
 
     try:
+        # ★ここで JSON を強制するのが今回の修正ポイント
         resp = model.generate_content(
-            [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"]
+            [sys_prompt, f"【ユーザーからの情報】\n{ctx_text}"],
+            generation_config={
+                "max_output_tokens": 1024,
+                "response_mime_type": "application/json",
+            },
         )
         raw = resp.text.strip()
 
-        # もし前後に余計な文字が混ざった場合に備えて、最初の '{' 〜 最後の '}' を抜き出す
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start == -1 or end == -1:
-            return "【エラー】MAGI結果のJSONを正しく受信できませんでした。"
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            # 生の応答も返してデバッグしやすく
+            snippet = raw[:500]
+            return (
+                "【エラー】MAGI結果のJSONを正しく受信できませんでした。\n"
+                f"JSONDecodeError: {str(e)}\n"
+                "先頭500文字の生レスポンス：\n"
+                f"{snippet}"
+            )
 
-        json_str = raw[start : end + 1]
-        data = json.loads(json_str)
         return data
 
     except ResourceExhausted:
@@ -624,7 +633,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
 
     # 左側：Logic / Reality
     with colL:
-        # Logic
         if "logic" in agents:
             a = agents["logic"]
             dec = decision_to_css(a.get("decision_code", "Hold"))
@@ -649,7 +657,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                     unsafe_allow_html=True,
                 )
 
-        # Reality
         if "reality" in agents:
             a = agents["reality"]
             dec = decision_to_css(a.get("decision_code", "Hold"))
@@ -732,7 +739,9 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         unsafe_allow_html=True,
     )
 
-    agg_html = clean_text_for_display(aggregated.get("details", "") or aggregated.get("summary", ""))
+    agg_html = clean_text_for_display(
+        aggregated.get("details", "") or aggregated.get("summary", "")
+    )
     st.markdown(
         f'<div class="magi-aggregator">{agg_html.replace("\n", "<br>")}</div>',
         unsafe_allow_html=True,
