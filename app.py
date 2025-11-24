@@ -203,7 +203,7 @@ st.markdown(
             gap: 8px;
         }
         .magi-header-title {
-            fontサイズ: 16px;
+            font-size: 16px;
         }
         .magi-panel {
             font-size: 12px;
@@ -268,7 +268,6 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # レスポンス形式は各呼び出し側で処理
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -289,20 +288,21 @@ def trim_text(s: str, max_chars: int = 600) -> str:
     return s[:max_chars] + "\n…（長文のためここで省略）"
 
 
-def extract_text_from_response(resp) -> Optional[str]:
+def extract_text_from_response(resp) -> str:
     """
-    google.generativeai のレスポンスから、できるだけ安全にテキストを取り出す。
-    - resp.text が使えればそれを使う（ValueError は握りつぶす）
-    - ダメなら candidates → content.parts から text を集める
-    - MAX_TOKENS や SAFETY の終了理由があれば、それに応じたエラーメッセージを返す
+    必ず「文字列」を返すヘルパー。
+    - 取れたテキスト → そのまま返す
+    - 何も取れなかった → 説明付きの【エラー】テキストを返す（None は返さない）
     """
+    # 1. 素直に resp.text を試す
     try:
         t = (getattr(resp, "text", "") or "").strip()
         if t:
             return t
-    except ValueError:
+    except Exception:
         pass
 
+    # 2. candidates → parts から集める
     texts: list[str] = []
     max_tokens_hit = False
     safety_block = False
@@ -326,6 +326,7 @@ def extract_text_from_response(resp) -> Optional[str]:
     if texts:
         return "\n".join(texts).strip()
 
+    # 3. それでも何もない場合は理由を返す
     if max_tokens_hit:
         return (
             "【エラー】Gemini の出力トークン上限(MAX_TOKENS)に達したため、"
@@ -342,7 +343,7 @@ def extract_text_from_response(resp) -> Optional[str]:
     if block_reason:
         return f"【エラー】Gemini がテキストを返しませんでした（block_reason: {block_reason}）。"
 
-    return None
+    return "【エラー】Gemini がテキストを返しませんでした（候補なし）。"
 
 
 # ======================================================
@@ -362,8 +363,6 @@ def describe_image_with_gemini(img: Image.Image) -> str:
             },
         )
         text = extract_text_from_response(resp)
-        if not text:
-            return "【エラー】Gemini が画像の説明テキストを返しませんでした。"
         return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】画像解析に失敗しました: {str(e)}"
@@ -386,15 +385,13 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
             },
         )
         text = extract_text_from_response(resp)
-        if not text:
-            return "【エラー】Gemini が音声の文字起こしテキストを返しませんでした。"
         return clean_text_for_display(text)
     except Exception as e:
         return f"【エラー】音声解析に失敗しました: {str(e)}"
 
 
 # ======================================================
-# MAGI テキスト生成（プレーンテキスト）
+# MAGI テキスト生成
 # ======================================================
 def build_sys_prompt(mode_label: str) -> str:
     """
@@ -445,7 +442,6 @@ def build_sys_prompt(mode_label: str) -> str:
 要約: 2〜3文、合計120文字以内"""
         )
 
-    # 統合サマリー・詳細は常に出力
     blocks.append(
         """【MAGI-統合サマリー】
 全体としての結論を150文字以内でまとめる"""
@@ -465,10 +461,9 @@ def build_sys_prompt(mode_label: str) -> str:
     return header + "\n\n" + "\n\n".join(blocks) + "\n\n" + constraints
 
 
-def call_magi_plain(context: Dict[str, Any], mode_label: str) -> Optional[str]:
+def call_magi_plain(context: Dict[str, Any], mode_label: str) -> str:
     """
-    MAGI 4視点＋統合、もしくは選択された単独エージェント＋統合を
-    決め打ちフォーマットのテキストとして返す。
+    必ず文字列を返す。エラー時も「【エラー】…」という文字列を返す。
     """
     model = get_gemini_model()
 
@@ -505,7 +500,7 @@ def call_magi_plain(context: Dict[str, Any], mode_label: str) -> Optional[str]:
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 512,
+                "max_output_tokens": 768,  # 少し余裕を持たせる
                 "temperature": 0.6,
             },
         )
@@ -795,14 +790,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     with st.spinner("MAGI 分析を実行中..."):
         magi_text = call_magi_plain(context, analysis_mode)
 
-    if magi_text is None:
-        st.error(
-            "【エラー】Gemini が有効なテキストを返しませんでした。\n"
-            "・内容が極端に長い\n・安全フィルタにかかる表現が含まれている\nなどの可能性があります。\n\n"
-            "一度、質問やテキストを短く・穏やかな表現にして再実行してみてください。"
-        )
-        st.stop()
-
+    # ここで None は返ってこない設計なので、文字列のみを想定する
     if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
         st.error(magi_text)
         st.stop()
