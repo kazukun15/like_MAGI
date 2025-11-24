@@ -1,144 +1,147 @@
-import os
-import textwrap
-
+import streamlit as st
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError, ResourceExhausted
+import os
+import json
+import textwrap
 
 
-# ==============================
-# 1. APIキーの設定
-# ==============================
-# どちらかでOK：
-# - 環境変数 GEMINI_API_KEY にセットしておく
-# - 下の api_key に直書きする
+# =============================================================================
+# 初期設定
+# =============================================================================
 
-api_key = os.getenv("GEMINI_API_KEY")  # or "ここに直接キーを書いてテストしてもOK"
+st.set_page_config(
+    page_title="Gemini動作テスト（2.5 Flash）",
+    layout="centered",
+)
+
+st.title("🔬 Gemini 2.5 Flash 動作テスト")
+st.caption("※ このアプリは MAGI ではなく Gemini の挙動確認専用のテスターです")
+
+api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
 if not api_key:
-    raise RuntimeError(
-        "GEMINI_API_KEY が設定されていません。\n"
-        "環境変数 GEMINI_API_KEY を設定するか、コード中の api_key に直接キーを書いてください。"
-    )
+    st.error("❌ Gemini APIキーが設定されていません。\n\n環境変数 or Streamlit secrets に設定してください。")
+    st.stop()
 
 genai.configure(api_key=api_key)
 
 
-# ==============================
-# 2. テスト用の関数
-# ==============================
-def print_header(title: str):
-    print("=" * 80)
-    print(title)
-    print("=" * 80)
+# =============================================================================
+# テスト用関数
+# =============================================================================
 
-
-def test_gemini_simple():
-    print_header("1) モデルの初期化")
+def test_gemini(prompt: str):
     model_name = "gemini-2.5-flash"
-    print(f"使用モデル: {model_name}")
-
     model = genai.GenerativeModel(model_name)
 
-    # プロンプトはできるだけ短く・シンプルに
-    prompt = "天気は？"
-
-    print_header("2) 送信するプロンプト")
-    print(prompt)
-    print()
-
     try:
-        print_header("3) generate_content 呼び出し中...")
         resp = model.generate_content(
             prompt,
             generation_config={
-                "max_output_tokens": 128,  # 意図的にかなり少なめ
+                "max_output_tokens": 128,
                 "temperature": 0.6,
             },
         )
+        return resp
+
     except ResourceExhausted as e:
-        print_header("!! ResourceExhausted 例外発生（アカウント or リソース上限の可能性）")
-        print(repr(e))
-        return
+        return f"ResourceExhausted: {repr(e)}"
+
     except GoogleAPIError as e:
-        print_header("!! GoogleAPIError 発生（API レベルのエラー）")
-        print(repr(e))
-        return
+        return f"GoogleAPIError: {repr(e)}"
+
     except Exception as e:
-        print_header("!! 想定外の例外発生")
-        print(type(e), e)
-        return
+        return f"Exception: {repr(e)}"
 
-    # ==========================
-    # 4. レスポンス全体の概要
-    # ==========================
-    print_header("4) resp の型と dir(resp)")
-    print("type(resp):", type(resp))
-    print("dir(resp)（一部）:", [a for a in dir(resp) if not a.startswith("_")][:40])
 
-    # ==========================
-    # 5. resp.text を直接見てみる
-    # ==========================
-    print_header("5) resp.text を直接取得してみる")
+# =============================================================================
+# UI
+# =============================================================================
+
+prompt = st.text_area(
+    "送信するテキスト（短文推奨）",
+    "天気は？",
+    height=100,
+)
+
+if st.button("▶ テスト実行"):
+    with st.spinner("Geminiへ問い合わせ中..."):
+        resp = test_gemini(prompt)
+
+    # -------------------------------------------------------------
+    # 1) 例外で返ってきたケース（最上位が文字列）
+    # -------------------------------------------------------------
+    if isinstance(resp, str):
+        st.error("❌ API or SDK レベルのエラー（例外）発生")
+        st.code(resp)
+        st.stop()
+
+    # -------------------------------------------------------------
+    # 2) resp 全体の repr
+    # -------------------------------------------------------------
+    st.subheader("🧪 resp（生データ repr）")
     try:
-        t = (getattr(resp, "text", "") or "").strip()
-        print("resp.text:", repr(t))
+        full_repr = repr(resp)
     except Exception as e:
-        print("resp.text 取得時に例外:", type(e), e)
+        full_repr = f"<repr(resp) failed: {e}>"
 
-    # ==========================
-    # 6. candidates / finish_reason / parts を詳細に
-    # ==========================
-    print_header("6) candidates / finish_reason / parts の詳細")
+    st.code(textwrap.shorten(full_repr, width=2000, placeholder="..."), language="python")
+
+    # -------------------------------------------------------------
+    # 3) resp.text
+    # -------------------------------------------------------------
+    st.subheader("🧪 resp.text の中身")
+    try:
+        text_val = (getattr(resp, "text", "") or "").strip()
+        st.code(text_val if text_val else "<空>", language="markdown")
+    except Exception as e:
+        st.code(f"resp.text 取得時例外: {repr(e)}")
+
+    # -------------------------------------------------------------
+    # 4) candidates
+    # -------------------------------------------------------------
+    st.subheader("🧪 candidates 詳細")
 
     candidates = getattr(resp, "candidates", None)
-    print("candidates 存在有無:", candidates is not None)
+
     if not candidates:
-        print("candidates が None または空です。")
+        st.warning("candidates が None または空です。")
     else:
-        print(f"candidates の数: {len(candidates)}")
+        st.write(f"候補数: {len(candidates)}")
+
         for idx, cand in enumerate(candidates):
-            print("-" * 60)
-            print(f"[candidate {idx}] type:", type(cand))
-            finish_reason = getattr(cand, "finish_reason", None)
-            print("  finish_reason:", finish_reason)
+            st.write(f"### candidate[{idx}]")
+            st.json({
+                "finish_reason": getattr(cand, "finish_reason", None),
+                "index": getattr(cand, "index", None),
+            })
 
+            # content
             content = getattr(cand, "content", None)
-            print("  content type:", type(content))
-            print("  dir(content)（一部）:",
-                  [a for a in dir(content) if not a.startswith("_")][:30])
+            st.write("content:", type(content).__name__)
 
-            parts = getattr(content, "parts", None) if content is not None else None
-            print("  parts 存在有無:", parts is not None)
-            if not parts:
-                print("  parts が None または空です。")
-            else:
-                print(f"  parts の数: {len(parts)}")
-                for p_idx, part in enumerate(parts):
-                    print(f"    [part {p_idx}] type:", type(part))
-                    part_text = getattr(part, "text", None)
-                    print("      part.text:", repr(part_text))
+            if content is not None:
+                parts = getattr(content, "parts", None)
+                if not parts:
+                    st.warning("parts が None または空")
+                else:
+                    st.write(f"parts 数: {len(parts)}")
+                    for p_idx, part in enumerate(parts):
+                        st.write(f"#### parts[{p_idx}]")
+                        st.json({
+                            "type": type(part).__name__,
+                            "text": getattr(part, "text", None),
+                        })
 
-    # ==========================
-    # 7. prompt_feedback / usage_metadata
-    # ==========================
-    print_header("7) prompt_feedback / usage_metadata")
-
+    # -------------------------------------------------------------
+    # 5) prompt_feedback と usage_metadata
+    # -------------------------------------------------------------
+    st.subheader("🧪 prompt_feedback")
     pf = getattr(resp, "prompt_feedback", None)
-    print("prompt_feedback:", pf)
+    st.json(pf if pf else "<なし>")
 
+    st.subheader("🧪 usage_metadata")
     usage = getattr(resp, "usage_metadata", None)
-    print("usage_metadata:", usage)
+    st.json(usage if usage else "<なし>")
 
-    # ==========================
-    # 8. resp 全体の repr
-    # ==========================
-    print_header("8) resp 全体の repr（2000文字まで）")
-    try:
-        s = repr(resp)
-    except Exception as e:
-        s = f"<repr(resp) で例外発生: {e}>"
-    print(textwrap.shorten(s, width=2000, placeholder="..."))
-
-
-if __name__ == "__main__":
-    test_gemini_simple()
