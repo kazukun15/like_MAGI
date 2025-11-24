@@ -1,185 +1,840 @@
 import os
-import textwrap
+import io
+import re
+from typing import Dict, Any, Optional
 
 import streamlit as st
+from PIL import Image
+
 import google.generativeai as genai
-from google.api_core.exceptions import GoogleAPIError, ResourceExhausted
+from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
+import docx
 
-
-# =============================================================================
-# 初期設定
-# =============================================================================
-
+# ======================================================
+# ページ設定
+# ======================================================
 st.set_page_config(
-    page_title="Gemini動作テスト（2.0 Flash Lite）",
-    layout="centered",
+    page_title="MAGI風マルチAI分析システム（テキスト簡易版）",
+    page_icon="🧬",
+    layout="wide",
 )
 
-st.title("🔬 Gemini 2.0 Flash Lite 動作テスト")
-st.caption("※ このアプリは MAGI ではなく Gemini の挙動確認専用のテスターです")
+# ------------------------------------------------------
+# MAGI風 カスタムCSS（スマホ対応）
+# ------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: radial-gradient(circle at top, #222b40 0, #050710 45%, #02030a 100%);
+        color: #e0e4ff;
+        font-family: "Roboto Mono", "SF Mono", "Consolas", "Noto Sans JP", monospace;
+    }
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #3e4a6e;
+        border-radius: 3px;
+    }
+    .magi-header {
+        border: 1px solid #4d5cff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 16px;
+        background: linear-gradient(135deg, rgba(35,50,95,0.95), rgba(10,15,35,0.95));
+        box-shadow: 0 0 20px rgba(80,120,255,0.35);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .magi-header-left { display: flex; flex-direction: column; }
+    .magi-header-title {
+        font-size: 20px;
+        letter-spacing: 0.18em;
+        color: #e8ecff;
+        text-transform: uppercase;
+    }
+    .magi-header-sub {
+        font-size: 11px;
+        color: #9fa8ff;
+        margin-top: 4px;
+    }
+    .magi-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: #b6ffcc;
+    }
+    .magi-status-light {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: radial-gradient(circle, #9fffcb 0, #00ff66 40%, #008833 100%);
+        box-shadow: 0 0 8px #00ff99;
+        animation: magi-pulse 1.5s infinite ease-in-out;
+    }
+    @keyframes magi-pulse {
+        0% { transform: scale(1); opacity: 0.8; }
+        50% { transform: scale(1.3); opacity: 1; }
+        100% { transform: scale(1); opacity: 0.8; }
+    }
+    .magi-info-card {
+        border-radius: 10px;
+        border: 1px solid rgba(130,140,200,0.6);
+        background: linear-gradient(135deg, rgba(16,22,48,0.95), rgba(6,10,26,0.95));
+        padding: 10px 14px;
+        font-size: 13px;
+        color: #cfd6ff;
+        margin-bottom: 8px;
+    }
+    .magi-info-card b { color: #ffffff; }
 
-# APIキー取得（secrets優先 → 環境変数）
+    .magi-panel {
+        border-radius: 10px;
+        padding: 10px 14px;
+        margin-top: 6px;
+        margin-bottom: 6px;
+        font-size: 13px;
+        line-height: 1.6;
+        border: 1px solid rgba(140,160,255,0.4);
+        background: radial-gradient(circle at top, rgba(18,26,60,0.98), rgba(5,8,22,0.98));
+        box-shadow: 0 0 15px rgba(90,110,200,0.35);
+        overflow-wrap: break-word;
+    }
+    .magi-panel-logic {
+        border-color: #497bff;
+        box-shadow: 0 0 16px rgba(74,123,255,0.4);
+    }
+    .magi-panel-human {
+        border-color: #ffb349;
+        box-shadow: 0 0 16px rgba(255,179,73,0.4);
+    }
+    .magi-panel-reality {
+        border-color: #3fd684;
+        box-shadow: 0 0 16px rgba(63,214,132,0.4);
+    }
+    .magi-panel-media {
+        border-color: #c36bff;
+        box-shadow: 0 0 16px rgba(195,107,255,0.4);
+    }
+    .magi-panel-summary {
+        margin-top: 4px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #e3e7ff;
+    }
+
+    .magi-vote {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 4px 8px;
+        border-radius: 6px;
+        margin-bottom: 4px;
+        font-size: 11px;
+    }
+    .magi-vote-label-en {
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        opacity: 0.9;
+    }
+    .magi-vote-label-jp {
+        font-size: 12px;
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    .magi-vote-approve {
+        background: linear-gradient(135deg, #0b5428, #21b35a);
+        border: 1px solid #39ff9c;
+        box-shadow: 0 0 12px rgba(50,255,170,0.7);
+        color: #e8fff4;
+    }
+    .magi-vote-reject {
+        background: linear-gradient(135deg, #5b1111, #d63232);
+        border: 1px solid #ff7b7b;
+        box-shadow: 0 0 12px rgba(255,100,100,0.7);
+        color: #ffecec;
+    }
+    .magi-vote-hold {
+        background: linear-gradient(135deg, #6a5212, #d7a52b);
+        border: 1px solid #ffd966;
+        box-shadow: 0 0 12px rgba(255,220,120,0.7);
+        color: #fff8e1;
+    }
+
+    .magi-aggregator {
+        border-radius: 12px;
+        padding: 16px 18px;
+        margin-top: 10px;
+        border: 1px solid #6f8dff;
+        background: radial-gradient(circle at top, rgba(31,42,90,0.98), rgba(6,8,20,0.98));
+        box-shadow: 0 0 22px rgba(110,140,255,0.5);
+        font-size: 14px;
+        color: #ecf0ff;
+        line-height: 1.7;
+        overflow-wrap: break-word;
+    }
+
+    .magi-section-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: #e3e7ff;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-top: 16px;
+        margin-bottom: 6px;
+    }
+    .magi-divider {
+        height: 1px;
+        border: none;
+        background: linear-gradient(to right, #4b5cff, transparent);
+        margin-bottom: 10px;
+    }
+
+    @media (max-width: 768px) {
+        .magi-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        .magi-header-title {
+            font-size: 16px;
+        }
+        .magi-panel {
+            font-size: 12px;
+            padding: 8px 10px;
+        }
+        .magi-aggregator {
+            font-size: 13px;
+            padding: 12px 14px;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# MAGI ヘッダー
+st.markdown(
+    """
+    <div class="magi-header">
+        <div class="magi-header-left">
+            <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
+            <div class="magi-header-sub">
+                GEMINI 2.0 FLASH LITE · TEXT-ONLY LIGHTWEIGHT ANALYSIS
+            </div>
+        </div>
+        <div class="magi-status">
+            <div class="magi-status-light"></div>
+            <span>SYSTEM STATUS: ONLINE</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="magi-info-card">
+    <b>概要：</b> テキスト・画像・音声などを入力すると、<b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> が
+    それぞれ短いコメントと判定を出し、最後に統合MAGIが結論をまとめます。<br>
+    出力はプレーンテキスト形式のみとし、JSON解析を行わないことで安定性を優先した簡易版です。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ======================================================
+# Gemini API 初期化
+# ======================================================
 api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
 
 if not api_key:
     st.error(
-        "❌ Gemini APIキーが設定されていません。\n\n"
-        "・Streamlit Cloud: Secrets に GEMINI_API_KEY を設定\n"
-        "・ローカル: 環境変数 GEMINI_API_KEY を設定\n"
+        "Gemini の API キーが設定されていません。\n\n"
+        "【Streamlit Cloud】Settings → Secrets で：\n"
+        'GEMINI_API_KEY = "あなたのGemini APIキー"\n\n'
+        "【ローカル】.streamlit/secrets.toml または環境変数 GEMINI_API_KEY に設定してください。"
     )
     st.stop()
 
 genai.configure(api_key=api_key)
 
 
-# =============================================================================
-# テスト用関数
-# =============================================================================
+@st.cache_resource(show_spinner=False)
+def get_gemini_model():
+    # ★ モデルを gemini-2.0-flash-lite に変更 ★
+    return genai.GenerativeModel("gemini-2.0-flash-lite")
 
-def test_gemini(prompt: str):
+
+# ======================================================
+# ユーティリティ
+# ======================================================
+def clean_text_for_display(text: str) -> str:
+    if not text:
+        return ""
+    return text.replace("*", "・")
+
+
+def trim_text(s: str, max_chars: int = 600) -> str:
+    if not s:
+        return ""
+    if len(s) <= max_chars:
+        return s
+    return s[:max_chars] + "\n…（長文のためここで省略）"
+
+
+# ======================================================
+# 媒体のテキスト化（画像・音声）
+# ======================================================
+def describe_image_with_gemini(img: Image.Image) -> str:
+    model = get_gemini_model()
+    prompt = (
+        "この画像に何が写っているか、日本語で簡潔に2〜3文で説明してください。\n"
+        "心理的な印象も1文で添えてください。"
+    )
+    try:
+        resp = model.generate_content([prompt, img])
+        return clean_text_for_display((resp.text or "").strip())
+    except Exception as e:
+        return f"【エラー】画像解析に失敗しました: {str(e)}"
+
+
+def transcribe_audio_with_gemini(uploaded_file) -> str:
+    model = get_gemini_model()
+    audio_bytes = uploaded_file.getvalue()
+    mime_type = uploaded_file.type or "audio/wav"
+
+    prompt = (
+        "この音声の内容を日本語でできるだけ正確に文字起こししてください。\n"
+        "出力は通常の日本語文のみで書いてください。"
+    )
+    try:
+        resp = model.generate_content(
+            [prompt, {"mime_type": mime_type, "data": audio_bytes}]
+        )
+        return clean_text_for_display((resp.text or "").strip())
+    except Exception as e:
+        return f"【エラー】音声解析に失敗しました: {str(e)}"
+
+
+# ======================================================
+# MAGI テキスト生成（1回呼び出し・プレーンテキスト）
+# ======================================================
+def call_magi_plain(context: Dict[str, Any]) -> str | None:
     """
-    gemini-2.0-flash-lite に対してシンプルな generate_content を行い、
-    レスポンスオブジェクト or エラーメッセージ文字列を返す。
+    MAGI 4視点＋統合を、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
+    JSONは使わない。
     """
-    model_name = "gemini-2.0-flash-lite"
-    model = genai.GenerativeModel(model_name)
+    model = get_gemini_model()
+
+    trimmed_context = {
+        "user_question": trim_text(context.get("user_question", "")),
+        "text_input": trim_text(context.get("text_input", "")),
+        "audio_transcript": trim_text(context.get("audio_transcript", "")),
+        "image_description": trim_text(context.get("image_description", "")),
+    }
+
+    sys_prompt = """
+あなたは NERV の MAGI システム全体を模した統合AIです。
+Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
+以下のフォーマットだけを使って日本語で出力してください。
+
+[重要：出力フォーマット（この通りに出力すること）]
+
+【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる
+
+【MAGI-統合詳細】
+統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く
+
+[制約]
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
+"""
+
+    ctx_text = (
+        "【ユーザーからの情報】\n"
+        + f"質問: {trimmed_context['user_question']}\n"
+        + (
+            f"テキスト入力: {trimmed_context['text_input']}\n"
+            if trimmed_context["text_input"]
+            else ""
+        )
+        + (
+            f"音声文字起こし: {trimmed_context['audio_transcript']}\n"
+            if trimmed_context["audio_transcript"]
+            else ""
+        )
+        + (
+            f"画像説明: {trimmed_context['image_description']}\n"
+            if trimmed_context["image_description"]
+            else ""
+        )
+    )
 
     try:
         resp = model.generate_content(
-            prompt,
+            [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 256,  # 普通に1回答には十分な程度
-                "temperature": 0.6,
+                "max_output_tokens": 640,  # 出力をかなり絞る
             },
         )
-        return resp
 
-    except ResourceExhausted as e:
-        return f"ResourceExhausted: {repr(e)}"
+        # 2.0-flash-lite は通常 candidates / parts をちゃんと返すが、一応チェック
+        if not getattr(resp, "candidates", None):
+            return None
+        first = resp.candidates[0]
+        content = getattr(first, "content", None)
+        if not content or not getattr(content, "parts", None):
+            return None
 
+        text = (getattr(resp, "text", "") or "").strip()
+        return text if text else None
+
+    except ResourceExhausted:
+        return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
     except GoogleAPIError as e:
-        return f"GoogleAPIError: {repr(e)}"
-
+        return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
     except Exception as e:
-        return f"Exception: {repr(e)}"
+        return f"【エラー】MAGI分析中に想定外のエラーが発生しました: {str(e)}"
 
 
-# =============================================================================
-# UI
-# =============================================================================
+# ======================================================
+# テキスト → 擬似エージェント構造へのパース
+# ======================================================
+def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    call_magi_plain の出力テキストを
+    - agents: logic/human/reality/media
+    - aggregated: summary/details
+    に分解する。
+    JSON ではないので、見出しベースの簡易パースを行う。
+    """
+    agents: Dict[str, Any] = {}
+    aggregated: Dict[str, str] = {"summary": "", "details": ""}
 
-prompt = st.text_area(
-    "送信するテキスト（短文でOK）",
-    "天気は？",
-    height=100,
+    pattern = r"^【(Magi-Logic|Magi-Human|Magi-Reality|Magi-Media|MAGI-統合サマリー|MAGI-統合詳細)】"
+    parts = re.split(pattern, text, flags=re.MULTILINE)
+
+    it = iter(parts[1:])  # 最初の要素は前置き
+
+    for name, body in zip(it, it):
+        body = body.strip()
+        if name == "Magi-Logic":
+            agents["logic"] = parse_agent_block("Magi-Logic（論理・構造担当）", body)
+        elif name == "Magi-Human":
+            agents["human"] = parse_agent_block("Magi-Human（感情・人間面担当）", body)
+        elif name == "Magi-Reality":
+            agents["reality"] = parse_agent_block("Magi-Reality（現実運用・リスク担当）", body)
+        elif name == "Magi-Media":
+            agents["media"] = parse_agent_block("Magi-Media（表現・印象担当）", body)
+        elif name == "MAGI-統合サマリー":
+            aggregated["summary"] = body.replace("\n", " ").strip()
+        elif name == "MAGI-統合詳細":
+            aggregated["details"] = body.strip()
+
+    return agents, aggregated
+
+
+def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
+    """
+    各エージェントブロックの中から
+    - 判定: 可決/保留/否決
+    - 要約: 以下の行
+    を抜き出す。
+    """
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    decision_jp = "保留"
+    summary = ""
+
+    for line in lines:
+        if line.startswith("判定"):
+            if "可決" in line:
+                decision_jp = "可決"
+            elif "否決" in line:
+                decision_jp = "否決"
+            elif "保留" in line:
+                decision_jp = "保留"
+        elif line.startswith("要約"):
+            summary = line.replace("要約", "").replace(":", "").replace("：", "").strip()
+        else:
+            if summary:
+                summary += " " + line
+
+    decision_code = {
+        "可決": "Go",
+        "否決": "No-Go",
+        "保留": "Hold",
+    }.get(decision_jp, "Hold")
+
+    return {
+        "name_jp": name_jp,
+        "summary": summary,
+        "decision_jp": decision_jp,
+        "decision_code": decision_code,
+    }
+
+
+def decision_to_css(decision_code: str) -> Dict[str, str]:
+    code = (decision_code or "Hold").strip()
+    if code == "Go":
+        return {"css": "approve", "en": "APPROVE", "jp": "可決"}
+    if code == "No-Go":
+        return {"css": "reject", "en": "REJECT", "jp": "否決"}
+    return {"css": "hold", "en": "HOLD", "jp": "保留"}
+
+
+# ======================================================
+# Word レポート生成
+# ======================================================
+def build_word_report(
+    context: Dict[str, Any],
+    agents: Dict[str, Any],
+    aggregated: Dict[str, Any],
+    magi_raw_text: str,
+    image: Optional[Image.Image] = None,
+) -> bytes:
+    doc = docx.Document()
+    doc.add_heading("MAGI風マルチAI分析レポート（テキスト簡易版）", level=1)
+
+    # 第1章 入力情報
+    doc.add_heading("第1章 入力情報", level=2)
+    doc.add_paragraph(f"■ ユーザー質問：{context.get('user_question', '')}")
+    if context.get("text_input"):
+        doc.add_paragraph("■ テキスト入力：")
+        doc.add_paragraph(context["text_input"])
+    if context.get("audio_transcript"):
+        doc.add_paragraph("■ 音声文字起こし：")
+        doc.add_paragraph(context["audio_transcript"])
+    if context.get("image_description"):
+        doc.add_paragraph("■ 画像の説明：")
+        doc.add_paragraph(context["image_description"])
+
+    if image is not None:
+        img_stream = io.BytesIO()
+        image.save(img_stream, format="PNG")
+        img_stream.seek(0)
+        doc.add_picture(img_stream, width=docx.shared.Inches(3))
+
+    # 第2章 各MAGIエージェントの要約
+    doc.add_heading("第2章 各MAGIエージェントの要約と判定", level=2)
+    if agents:
+        for key in ["logic", "human", "reality", "media"]:
+            if key not in agents:
+                continue
+            a = agents[key]
+            name = a.get("name_jp", key)
+            doc.add_heading(name, level=3)
+            doc.add_paragraph(f"判定：{a.get('decision_jp', '')}")
+            doc.add_paragraph(f"要約：{clean_text_for_display(a.get('summary', ''))}")
+    else:
+        doc.add_paragraph("今回の実行では、MAGIエージェントの詳細出力は取得できませんでした。")
+
+    # 第3章 MAGI統合AIの結論
+    doc.add_heading("第3章 MAGI統合AIの結論・アクションプラン", level=2)
+    agg_summary = clean_text_for_display(aggregated.get("summary", ""))
+    agg_details = clean_text_for_display(aggregated.get("details", ""))
+    if agg_summary:
+        doc.add_paragraph("【サマリー】")
+        doc.add_paragraph(agg_summary)
+    if agg_details:
+        doc.add_paragraph("【詳細】")
+        for line in agg_details.splitlines():
+            doc.add_paragraph(line)
+
+    # 付録：生テキスト
+    doc.add_heading("付録：MAGI生テキスト", level=2)
+    for line in magi_raw_text.splitlines():
+        doc.add_paragraph(line)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ======================================================
+# UI：入力エリア
+# ======================================================
+st.markdown(
+    '<div class="magi-section-title">INPUT · QUERY & MEDIA</div><hr class="magi-divider">',
+    unsafe_allow_html=True,
 )
 
-if st.button("▶ テスト実行"):
-    with st.spinner("Geminiへ問い合わせ中..."):
-        resp = test_gemini(prompt)
+user_question = st.text_area(
+    "MAGI に投げたい「問い」",
+    placeholder=(
+        "例：この企画の方向性と改善点をMAGIに評価してほしい。\n"
+        "例：この写真や音声から受ける印象と、次に取るべき行動を知りたい。"
+    ),
+    height=120,
+)
 
-    # -------------------------------------------------------------
-    # 1) 例外で返ってきたケース（最上位が文字列）
-    # -------------------------------------------------------------
-    if isinstance(resp, str):
-        st.error("❌ API / SDK レベルで例外が発生しました")
-        st.code(resp)
+st.markdown("#### 媒体入力モード（任意）")
+input_mode = st.radio(
+    "画像・音声の入力方法を選択してください。",
+    ["ファイル／写真ライブラリから選択", "カメラで撮影", "使用しない"],
+    index=0,
+)
+
+col1, col2 = st.columns(2)
+uploaded_file: Optional[Any] = None
+image_for_report: Optional[Image.Image] = None
+
+with col1:
+    if input_mode == "ファイル／写真ライブラリから選択":
+        file = st.file_uploader(
+            "画像 / 音声 / テキストファイル\n（スマホではここからカメラ撮影や写真選択ができます）",
+            accept_multiple_files=False,
+        )
+        if file:
+            uploaded_file = file
+    else:
+        st.write("ファイル／写真ライブラリからの選択は無効です。")
+
+with col2:
+    if input_mode == "カメラで撮影":
+        cam = st.camera_input("カメラで撮影（対応端末のみ）")
+        if cam:
+            uploaded_file = cam
+    else:
+        st.write("カメラは現在オフになっています。")
+
+text_input = st.text_area(
+    "補足テキスト（任意）",
+    height=100,
+    placeholder="貼り付けたいメモや補足情報があれば入力してください。",
+)
+
+if not user_question and not uploaded_file and not text_input:
+    st.info("質問か、媒体（画像・音声など）、または補足テキストのいずれかを入力してください。")
+    st.stop()
+
+# ======================================================
+# 媒体の前処理（テキスト化）
+# ======================================================
+context: Dict[str, Any] = {
+    "user_question": user_question,
+    "text_input": text_input,
+    "audio_transcript": "",
+    "image_description": "",
+}
+
+if uploaded_file is not None:
+    if uploaded_file.type and uploaded_file.type.startswith("image/"):
+        try:
+            image = Image.open(uploaded_file).convert("RGB")
+        except Exception:
+            st.error("この画像形式には対応していません。JPEG または PNG 形式の画像を使用してください。")
+            image = None
+
+        if image is not None:
+            image_for_report = image
+            st.image(image, caption="入力画像", use_column_width=True)
+
+            with st.spinner("画像内容を解析中（Gemini）..."):
+                img_desc = describe_image_with_gemini(image)
+            context["image_description"] = img_desc
+
+    elif uploaded_file.type and uploaded_file.type.startswith("audio/"):
+        st.audio(uploaded_file)
+        with st.spinner("音声を文字起こし中（Gemini）..."):
+            transcript = transcribe_audio_with_gemini(uploaded_file)
+        context["audio_transcript"] = transcript
+
+    else:
+        if (uploaded_file.type == "text/plain") or (
+            isinstance(uploaded_file.name, str)
+            and uploaded_file.name.lower().endswith(".txt")
+        ):
+            text_bytes = uploaded_file.read()
+            context["text_input"] += "\n\n[ファイル内容]\n" + text_bytes.decode(
+                "utf-8", errors="ignore"
+            )
+        else:
+            st.warning("対応していないファイル形式です。画像・音声・テキストファイルを使用してください。")
+
+# ======================================================
+# MAGI 分析実行
+# ======================================================
+st.markdown(
+    '<div class="magi-section-title">PROCESS · MAGI ANALYSIS</div><hr class="magi-divider">',
+    unsafe_allow_html=True,
+)
+
+if st.button("🔎 MAGI による分析を実行", type="primary"):
+    if not user_question and not text_input and not any(
+        [context["audio_transcript"], context["image_description"]]
+    ):
+        st.warning("最低でも質問・テキスト・媒体のいずれかが必要です。")
         st.stop()
 
-    # -------------------------------------------------------------
-    # 2) resp 全体の repr
-    # -------------------------------------------------------------
-    st.subheader("🧪 resp（生データ repr）")
-    try:
-        full_repr = repr(resp)
-    except Exception as e:
-        full_repr = f"<repr(resp) failed: {e}>"
+    with st.spinner("MAGI 分析を実行中..."):
+        magi_text = call_magi_plain(context)
 
-    st.code(textwrap.shorten(full_repr, width=2000, placeholder="..."), language="python")
+    if magi_text is None:
+        st.error(
+            "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+            "・内容が極端に長い\n・安全フィルタにかかる表現が含まれている\nなどの可能性があります。\n\n"
+            "一度、質問やテキストを短く・穏やかな表現にして再実行してみてください。"
+        )
+        st.stop()
 
-    # -------------------------------------------------------------
-    # 3) resp.text
-    # -------------------------------------------------------------
-    st.subheader("🧪 resp.text の中身")
-    try:
-        text_val = (getattr(resp, "text", "") or "").strip()
-        st.code(text_val if text_val else "<空>", language="markdown")
-    except Exception as e:
-        st.code(f"resp.text 取得時例外: {repr(e)}")
+    if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
+        st.error(magi_text)
+        st.stop()
 
-    # -------------------------------------------------------------
-    # 4) candidates / parts
-    # -------------------------------------------------------------
-    st.subheader("🧪 candidates の詳細")
+    # 解析テキストをパース
+    agents, aggregated = parse_magi_text(magi_text)
 
-    candidates = getattr(resp, "candidates", None)
+    st.success("MAGI の分析が完了しました。")
 
-    if not candidates:
-        st.warning("candidates が None または空です。")
-    else:
-        st.write(f"候補数: {len(candidates)}")
+    colL, colR = st.columns(2)
 
-        for idx, cand in enumerate(candidates):
-            st.write(f"### candidate[{idx}]")
+    # 左側：Logic / Reality
+    with colL:
+        if "logic" in agents:
+            a = agents["logic"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Logic")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-logic">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
-            finish_reason = getattr(cand, "finish_reason", None)
-            index = getattr(cand, "index", None)
-            st.json({
-                "finish_reason": finish_reason,
-                "index": index,
-            })
+        if "reality" in agents:
+            a = agents["reality"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Reality")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-reality">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
-            content = getattr(cand, "content", None)
-            st.write("content の型:", type(content).__name__)
+    # 右側：Human / Media
+    with colR:
+        if "human" in agents:
+            a = agents["human"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Human")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-human">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
-            if content is not None:
-                parts = getattr(content, "parts", None)
-                if not parts:
-                    st.warning("parts が None または空です。")
-                else:
-                    st.write(f"parts 数: {len(parts)}")
-                    for p_idx, part in enumerate(parts):
-                        st.write(f"#### parts[{p_idx}]")
-                        part_text = getattr(part, "text", None)
-                        st.json({
-                            "type": type(part).__name__,
-                            "text": part_text,
-                        })
-            else:
-                st.warning("content が None です。")
+        if "media" in agents:
+            a = agents["media"]
+            dec = decision_to_css(a.get("decision_code", "Hold"))
+            st.markdown("##### Magi-Media")
+            st.markdown(
+                f'''
+                <div class="magi-panel magi-panel-media">
+                  <div class="magi-vote magi-vote-{dec["css"]}">
+                    <div class="magi-vote-label-en">{dec["en"]}</div>
+                    <div class="magi-vote-label-jp">{dec["jp"]}</div>
+                  </div>
+                  <div class="magi-panel-summary">
+                    {clean_text_for_display(a.get("summary", "")).replace("\\n", "<br>")}
+                  </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
 
-    # -------------------------------------------------------------
-    # 5) prompt_feedback
-    # -------------------------------------------------------------
-    st.subheader("🧪 prompt_feedback")
+    # ==================================================
+    # MAGI 統合AI
+    # ==================================================
+    st.markdown(
+        '<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
 
-    pf = getattr(resp, "prompt_feedback", None)
-    if pf is None:
-        st.json({"info": "なし"})
-    else:
-        # proto 系なら to_dict があることが多いのでそれを使う
-        try:
-            if hasattr(pf, "to_dict"):
-                st.json(pf.to_dict())
-            else:
-                # そのまま渡すと JSON エラーになる可能性があるので repr で表示
-                st.code(repr(pf))
-        except Exception as e:
-            st.code(f"prompt_feedback 表示時例外: {repr(e)}")
+    agg_html = clean_text_for_display(
+        aggregated.get("details", "") or aggregated.get("summary", "")
+    )
+    st.markdown(
+        f'<div class="magi-aggregator">{agg_html.replace("\\n", "<br>")}</div>',
+        unsafe_allow_html=True,
+    )
 
-    # -------------------------------------------------------------
-    # 6) usage_metadata
-    # -------------------------------------------------------------
-    st.subheader("🧪 usage_metadata")
+    # ==================================================
+    # レポート出力
+    # ==================================================
+    report_bytes = build_word_report(
+        context=context,
+        agents=agents,
+        aggregated=aggregated,
+        magi_raw_text=magi_text,
+        image=image_for_report,
+    )
 
-    usage = getattr(resp, "usage_metadata", None)
-    if usage is None:
-        st.json({"info": "なし"})
-    else:
-        try:
-            if hasattr(usage, "to_dict"):
-                st.json(usage.to_dict())
-            else:
-                st.code(repr(usage))
-        except Exception as e:
-            st.code(f"usage_metadata 表示時例外: {repr(e)}")
+    st.markdown(
+        '<div class="magi-section-title">REPORT · EXPORT</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
+
+    st.download_button(
+        "MAGIレポート（Word）をダウンロード",
+        data=report_bytes,
+        file_name="MAGI分析レポート_テキスト簡易版.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+else:
+    st.info(
+        "下のボタンを押すと、MAGI が4視点＋統合のコメントをテキスト形式で生成します。\n"
+        "最初はシンプルな質問だけで試すと動作確認しやすいです。"
+    )
