@@ -2,7 +2,6 @@ import streamlit as st
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError, ResourceExhausted
 import os
-import json
 import textwrap
 
 
@@ -139,9 +138,15 @@ if st.button("▶ テスト実行"):
     # -------------------------------------------------------------
     st.subheader("🧪 prompt_feedback")
     pf = getattr(resp, "prompt_feedback", None)
-    st.json(pf if pf else "<なし>")
+    if pf is None:
+        # ここを文字列ではなく dict で渡す
+        st.json({"info": "なし"})
+    else:
+        st.json(pf)
 
     st.subheader("🧪 usage_metadata")
     usage = getattr(resp, "usage_metadata", None)
-    st.json(usage if usage else "<なし>")
-
+    if usage is None:
+        st.json({"info": "なし"})
+    else:
+        st.json(usage)
