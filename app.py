@@ -268,7 +268,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # ★ モデルを gemini-2.0-flash-lite に変更 ★
+    # 安定して動いたモデルに固定
     return genai.GenerativeModel("gemini-2.0-flash-lite")
 
 
@@ -327,10 +327,6 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 # MAGI テキスト生成（1回呼び出し・プレーンテキスト）
 # ======================================================
 def call_magi_plain(context: Dict[str, Any]) -> str | None:
-    """
-    MAGI 4視点＋統合を、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
-    JSONは使わない。
-    """
     model = get_gemini_model()
 
     trimmed_context = {
@@ -399,11 +395,10 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 640,  # 出力をかなり絞る
+                "max_output_tokens": 640,
             },
         )
 
-        # 2.0-flash-lite は通常 candidates / parts をちゃんと返すが、一応チェック
         if not getattr(resp, "candidates", None):
             return None
         first = resp.candidates[0]
@@ -426,13 +421,6 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGI�
 # テキスト → 擬似エージェント構造へのパース
 # ======================================================
 def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
-    """
-    call_magi_plain の出力テキストを
-    - agents: logic/human/reality/media
-    - aggregated: summary/details
-    に分解する。
-    JSON ではないので、見出しベースの簡易パースを行う。
-    """
     agents: Dict[str, Any] = {}
     aggregated: Dict[str, str] = {"summary": "", "details": ""}
 
@@ -460,12 +448,6 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str]]:
 
 
 def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
-    """
-    各エージェントブロックの中から
-    - 判定: 可決/保留/否決
-    - 要約: 以下の行
-    を抜き出す。
-    """
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     decision_jp = "保留"
     summary = ""
@@ -577,10 +559,39 @@ def build_word_report(
 
 
 # ======================================================
-# UI：入力エリア
+# サイドバー：媒体入力
+# ======================================================
+st.sidebar.markdown("### 媒体入力（任意）")
+
+input_mode = st.sidebar.radio(
+    "画像・音声の入力方法",
+    ["ファイル／写真ライブラリから選択", "カメラで撮影", "使用しない"],
+    index=2,
+)
+
+uploaded_file: Optional[Any] = None
+image_for_report: Optional[Image.Image] = None
+
+if input_mode == "ファイル／写真ライブラリから選択":
+    file = st.sidebar.file_uploader(
+        "画像 / 音声 / テキストファイル",
+        accept_multiple_files=False,
+    )
+    if file:
+        uploaded_file = file
+elif input_mode == "カメラで撮影":
+    cam = st.sidebar.camera_input("カメラで撮影（対応端末のみ）")
+    if cam:
+        uploaded_file = cam
+else:
+    st.sidebar.info("媒体入力を使用しない場合は、このままで構いません。")
+
+
+# ======================================================
+# メイン：質問と補足テキスト
 # ======================================================
 st.markdown(
-    '<div class="magi-section-title">INPUT · QUERY & MEDIA</div><hr class="magi-divider">',
+    '<div class="magi-section-title">INPUT · QUERY</div><hr class="magi-divider">',
     unsafe_allow_html=True,
 )
 
@@ -592,36 +603,6 @@ user_question = st.text_area(
     ),
     height=120,
 )
-
-st.markdown("#### 媒体入力モード（任意）")
-input_mode = st.radio(
-    "画像・音声の入力方法を選択してください。",
-    ["ファイル／写真ライブラリから選択", "カメラで撮影", "使用しない"],
-    index=0,
-)
-
-col1, col2 = st.columns(2)
-uploaded_file: Optional[Any] = None
-image_for_report: Optional[Image.Image] = None
-
-with col1:
-    if input_mode == "ファイル／写真ライブラリから選択":
-        file = st.file_uploader(
-            "画像 / 音声 / テキストファイル\n（スマホではここからカメラ撮影や写真選択ができます）",
-            accept_multiple_files=False,
-        )
-        if file:
-            uploaded_file = file
-    else:
-        st.write("ファイル／写真ライブラリからの選択は無効です。")
-
-with col2:
-    if input_mode == "カメラで撮影":
-        cam = st.camera_input("カメラで撮影（対応端末のみ）")
-        if cam:
-            uploaded_file = cam
-    else:
-        st.write("カメラは現在オフになっています。")
 
 text_input = st.text_area(
     "補足テキスト（任意）",
@@ -678,14 +659,11 @@ if uploaded_file is not None:
             st.warning("対応していないファイル形式です。画像・音声・テキストファイルを使用してください。")
 
 # ======================================================
-# MAGI 分析実行
+# MAGI 分析実行（コメントを問の近くに表示）
 # ======================================================
-st.markdown(
-    '<div class="magi-section-title">PROCESS · MAGI ANALYSIS</div><hr class="magi-divider">',
-    unsafe_allow_html=True,
-)
+run_analysis = st.button("🔎 MAGI による分析を実行", type="primary")
 
-if st.button("🔎 MAGI による分析を実行", type="primary"):
+if run_analysis:
     if not user_question and not text_input and not any(
         [context["audio_transcript"], context["image_description"]]
     ):
@@ -707,10 +685,15 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.error(magi_text)
         st.stop()
 
-    # 解析テキストをパース
     agents, aggregated = parse_magi_text(magi_text)
 
     st.success("MAGI の分析が完了しました。")
+
+    # ▼ 質問のすぐ下にコメント欄を配置
+    st.markdown(
+        '<div class="magi-section-title">OUTPUT · MAGI COMMENTS</div><hr class="magi-divider">',
+        unsafe_allow_html=True,
+    )
 
     colL, colR = st.columns(2)
 
@@ -794,25 +777,20 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
                 unsafe_allow_html=True,
             )
 
-    # ==================================================
-    # MAGI 統合AI
-    # ==================================================
+    # 統合コメント（これも質問の近くに）
+    agg_html = clean_text_for_display(
+        aggregated.get("details", "") or aggregated.get("summary", "")
+    )
     st.markdown(
         '<div class="magi-section-title">OUTPUT · MAGI AGGREGATED DECISION</div><hr class="magi-divider">',
         unsafe_allow_html=True,
-    )
-
-    agg_html = clean_text_for_display(
-        aggregated.get("details", "") or aggregated.get("summary", "")
     )
     st.markdown(
         f'<div class="magi-aggregator">{agg_html.replace("\\n", "<br>")}</div>',
         unsafe_allow_html=True,
     )
 
-    # ==================================================
     # レポート出力
-    # ==================================================
     report_bytes = build_word_report(
         context=context,
         agents=agents,
@@ -835,6 +813,6 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
 
 else:
     st.info(
-        "下のボタンを押すと、MAGI が4視点＋統合のコメントをテキスト形式で生成します。\n"
-        "最初はシンプルな質問だけで試すと動作確認しやすいです。"
+        "質問と必要なら補足テキストを入力し、右側のサイドバーで画像・音声・ファイルを指定してから、\n"
+        "「MAGI による分析を実行」を押してください。"
     )
