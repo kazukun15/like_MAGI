@@ -42,7 +42,7 @@ st.markdown(
         border: 1px solid #4d5cff;
         border-radius: 10px;
         padding: 12px 18px;
-        margin-bottom: 16px;
+        margin-bottom: 8px;
         background: linear-gradient(135deg, rgba(35,50,95,0.95), rgba(10,15,35,0.95));
         box-shadow: 0 0 20px rgba(80,120,255,0.35);
         display: flex;
@@ -63,10 +63,16 @@ st.markdown(
     }
     .magi-status {
         display: flex;
-        align-items: center;
-        gap: 8px;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 4px;
         font-size: 11px;
         color: #b6ffcc;
+    }
+    .magi-status-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
     }
     .magi-status-light {
         width: 10px;
@@ -76,11 +82,27 @@ st.markdown(
         box-shadow: 0 0 8px #00ff99;
         animation: magi-pulse 1.5s infinite ease-in-out;
     }
+    .magi-status-light-warn {
+        background: radial-gradient(circle, #ffe38a 0, #ffb300 40%, #aa6b00 100%);
+        box-shadow: 0 0 8px #ffb74d;
+    }
+    .magi-status-light-error {
+        background: radial-gradient(circle, #ff9e9e 0, #ff1744 40%, #9a0020 100%);
+        box-shadow: 0 0 8px #ff5252;
+    }
     @keyframes magi-pulse {
         0% { transform: scale(1); opacity: 0.8; }
         50% { transform: scale(1.3); opacity: 1; }
         100% { transform: scale(1); opacity: 0.8; }
     }
+    .magi-status-detail {
+        font-size: 10px;
+        color: #d0ffe4;
+        max-width: 260px;
+        text-align: right;
+        word-break: break-word;
+    }
+
     .magi-info-card {
         border-radius: 10px;
         border: 1px solid rgba(130,140,200,0.6);
@@ -219,31 +241,80 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ======================================================
+# 状態管理（Gemini ステータス）
+# ======================================================
+if "gemini_status" not in st.session_state:
+    st.session_state["gemini_status"] = {
+        "state": "INIT",  # INIT / NORMAL / WARN / MAX_TOKENS / SAFETY / API_ERROR / EMPTY / UNKNOWN
+        "detail": "まだ Gemini API 呼び出しは行われていません。",
+    }
+
+
+def set_gemini_status(state: str, detail: str):
+    st.session_state["gemini_status"] = {
+        "state": state,
+        "detail": detail,
+    }
+
+
+def render_status_lamp():
+    status = st.session_state.get("gemini_status", {})
+    state = status.get("state", "INIT")
+    detail = status.get("detail", "")
+
+    if state in ("INIT", "NORMAL"):
+        css_class = "magi-status-light"
+        label = "GEMINI: NORMAL"
+    elif state in ("WARN", "MAX_TOKENS", "SAFETY"):
+        css_class = "magi-status-light magi-status-light-warn"
+        label = f"GEMINI: {state}"
+    elif state in ("API_ERROR", "EMPTY", "UNKNOWN"):
+        css_class = "magi-status-light magi-status-light-error"
+        label = f"GEMINI: {state}"
+    else:
+        css_class = "magi-status-light magi-status-light-warn"
+        label = f"GEMINI: {state}"
+
+    st.markdown(
+        f"""
+        <div class="magi-status">
+          <div class="magi-status-row">
+            <div class="{css_class}"></div>
+            <span>{label}</span>
+          </div>
+          <div class="magi-status-detail">{detail}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # MAGI ヘッダ
-st.markdown(
-    """
-    <div class="magi-header">
-        <div class="magi-header-left">
-            <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
-            <div class="magi-header-sub">
-                GEMINI 2.5 FLASH · MULTI-AGENT TEXT ANALYSIS
+col_header_left, col_header_right = st.columns([3, 2])
+with col_header_left:
+    st.markdown(
+        """
+        <div class="magi-header">
+            <div class="magi-header-left">
+                <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
+                <div class="magi-header-sub">
+                    GEMINI 2.5 FLASH · MULTI-AGENT TEXT ANALYSIS
+                </div>
             </div>
         </div>
-        <div class="magi-status">
-            <div class="magi-status-light"></div>
-            <span>SYSTEM STATUS: ONLINE</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+with col_header_right:
+    render_status_lamp()
 
 st.markdown(
     """
     <div class="magi-info-card">
     <b>概要：</b> テキスト・画像・音声などを入力すると、<b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> が
     それぞれ短いコメントと判定を出し、最後に統合MAGIが結論をまとめます。<br>
-    各エージェントは個別にGemini 2.5 Flashへ問い合わせる方式で、出力はテキストのみです。
+    各エージェントは個別に Gemini 2.5 Flash へ問い合わせる方式で、出力はテキストのみです。
     </div>
     """,
     unsafe_allow_html=True,
@@ -268,7 +339,7 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # ここを 2.5 モデルに固定
+    # 2.5 モデルを使用
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
@@ -291,14 +362,27 @@ def trim_text(s: str, max_chars: int = 600) -> str:
 
 def extract_text_from_response(resp) -> str:
     """
-    必ず「文字列」を返すヘルパー。
-    - 取れたテキスト → そのまま返す
-    - 何も取れなかった → 説明付きの【エラー】テキストを返す
+    必ず「文字列」を返す。
+    - テキストが取れれば NORMAL
+    - MAX_TOKENS / SAFETY / block_reason などを検出して WARN
+    - それでも取れない場合は resp の生データを埋め込んだエラー文字列を返す（EMPTY / UNKNOWN）
     """
+    # resp が str の場合は、そのまま返す（ただしステータスも更新）
+    if isinstance(resp, str):
+        t = resp.strip()
+        if t:
+            # 先頭が【エラー】で始まる場合は API_ERROR として扱う
+            if t.startswith("【エラー】"):
+                set_gemini_status("API_ERROR", t[:200])
+            else:
+                set_gemini_status("NORMAL", "文字列レスポンスを正常に取得しました。")
+            return t
+
     # 1. resp.text を素直に試す
     try:
         t = (getattr(resp, "text", "") or "").strip()
         if t:
+            set_gemini_status("NORMAL", "resp.text からテキストを取得しました。")
             return t
     except Exception:
         pass
@@ -308,43 +392,75 @@ def extract_text_from_response(resp) -> str:
     max_tokens_hit = False
     safety_block = False
 
-    for cand in getattr(resp, "candidates", []) or []:
-        finish_reason = getattr(cand, "finish_reason", None)
-        if finish_reason == "MAX_TOKENS":
-            max_tokens_hit = True
-        if finish_reason == "SAFETY":
-            safety_block = True
+    candidates = getattr(resp, "candidates", None)
+    if candidates:
+        for cand in candidates:
+            finish_reason = getattr(cand, "finish_reason", None)
+            if finish_reason == "MAX_TOKENS":
+                max_tokens_hit = True
+            if finish_reason == "SAFETY":
+                safety_block = True
 
-        content = getattr(cand, "content", None)
-        if not content:
-            continue
+            content = getattr(cand, "content", None)
+            if not content:
+                continue
 
-        for part in getattr(content, "parts", []) or []:
-            part_text = getattr(part, "text", None)
-            if part_text:
-                texts.append(part_text)
+            parts = getattr(content, "parts", None)
+            if parts:
+                for part in parts:
+                    part_text = getattr(part, "text", None)
+                    if part_text:
+                        texts.append(part_text)
 
     if texts:
+        set_gemini_status("NORMAL", "candidates.parts からテキストを取得しました。")
         return "\n".join(texts).strip()
 
-    # 3. それでも空の場合は理由付きエラー
-    if max_tokens_hit:
-        return (
-            "【エラー】Gemini の出力トークン上限(MAX_TOKENS)に達したため、"
-            "テキストを最後まで生成できませんでした。質問や補足テキストを短くして再実行してください。"
-        )
-    if safety_block:
-        return (
-            "【エラー】Gemini の安全フィルタにより出力がブロックされました。\n"
-            "表現を穏やかにする・個人情報や過激な表現を避けるなどして再実行してください。"
-        )
-
+    # 3. prompt_feedback から block_reason を拾う
     pf = getattr(resp, "prompt_feedback", None)
     block_reason = getattr(pf, "block_reason", None) if pf else None
     if block_reason:
-        return f"【エラー】Gemini がテキストを返しませんでした（block_reason: {block_reason}）。"
+        msg = f"【エラー】Gemini がテキストを返しませんでした（block_reason: {block_reason}）。"
+        set_gemini_status("SAFETY", msg)
+        return msg
 
-    return "【エラー】Gemini がテキストを返しませんでした（候補なし）。"
+    # 4. MAX_TOKENS or SAFETY フラグが立っていた場合
+    if max_tokens_hit:
+        msg = (
+            "【エラー】Gemini の出力トークン上限(MAX_TOKENS)に達したため、"
+            "テキストを最後まで生成できませんでした。質問や補足テキストを短くして再実行してください。"
+        )
+        set_gemini_status("MAX_TOKENS", msg)
+        return msg
+    if safety_block:
+        msg = (
+            "【エラー】Gemini の安全フィルタにより出力がブロックされました。\n"
+            "表現を穏やかにする・個人情報や過激な表現を避けるなどして再実行してください。"
+        )
+        set_gemini_status("SAFETY", msg)
+        return msg
+
+    # 5. それでも何も取れない場合 → resp 全体を文字列化して返す（デバッグ用）
+    try:
+        debug_str = str(resp)
+    except Exception as e:
+        debug_str = f"<resp を文字列化できませんでした: {e}>"
+
+    debug_str = debug_str.strip()
+
+    if debug_str:
+        msg = (
+            "【エラー】Gemini が想定外の形式のレスポンスを返しました。\n"
+            "以下はレスポンスの生データ（抜粋）です：\n\n"
+            + debug_str[:2000]
+        )
+        set_gemini_status("UNKNOWN", "レスポンスに候補がなく、生データを表示しています。")
+        return msg
+
+    # 6. ここまで来たら本当に何もない
+    msg = "【エラー】Gemini がテキストを返しませんでした（レスポンスが空でした）。"
+    set_gemini_status("EMPTY", msg)
+    return msg
 
 
 # ======================================================
@@ -366,7 +482,9 @@ def describe_image_with_gemini(img: Image.Image) -> str:
         text = extract_text_from_response(resp)
         return clean_text_for_display(text)
     except Exception as e:
-        return f"【エラー】画像解析に失敗しました: {str(e)}"
+        msg = f"【エラー】画像解析に失敗しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
 
 
 def transcribe_audio_with_gemini(uploaded_file) -> str:
@@ -388,7 +506,9 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
         text = extract_text_from_response(resp)
         return clean_text_for_display(text)
     except Exception as e:
-        return f"【エラー】音声解析に失敗しました: {str(e)}"
+        msg = f"【エラー】音声解析に失敗しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
 
 
 # ======================================================
@@ -536,14 +656,21 @@ def call_magi_agent(agent_key: str, context: Dict[str, Any]) -> Dict[str, Any] |
             },
         )
     except ResourceExhausted:
-        return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
+        msg = "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
+        set_gemini_status("API_ERROR", "ResourceExhausted：リソース上限に到達した可能性があります。")
+        return msg
     except GoogleAPIError as e:
-        return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
+        msg = f"【エラー】Gemini API で問題が発生しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
     except Exception as e:
-        return f"【エラー】MAGIエージェント呼び出し中に想定外のエラーが発生しました: {str(e)}"
+        msg = f"【エラー】MAGIエージェント呼び出し中に想定外のエラーが発生しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
 
     text = extract_text_from_response(resp)
     if text.startswith("【エラー】"):
+        # extract_text_from_response 内でステータス更新済み
         return text
 
     parsed = parse_agent_block(cfg["name_jp"], text)
@@ -632,11 +759,17 @@ Magi-Logic / Magi-Human / Magi-Reality / Magi-Media からの評価を読み、
             },
         )
     except ResourceExhausted:
-        return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
+        msg = "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
+        set_gemini_status("API_ERROR", "ResourceExhausted：リソース上限に到達した可能性があります。")
+        return msg
     except GoogleAPIError as e:
-        return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
+        msg = f"【エラー】Gemini API で問題が発生しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
     except Exception as e:
-        return f"【エラー】MAGI統合分析中に想定外のエラーが発生しました: {str(e)}"
+        msg = f"【エラー】MAGI統合分析中に想定外のエラーが発生しました: {str(e)}"
+        set_gemini_status("API_ERROR", msg[:200])
+        return msg
 
     text = extract_text_from_response(resp)
     if text.startswith("【エラー】"):
@@ -844,6 +977,9 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     ):
         st.warning("最低でも質問・テキスト・媒体のいずれかが必要です。")
         st.stop()
+
+    # 実行前にステータスを初期化気味に
+    set_gemini_status("INIT", "MAGI 分析を開始しました。")
 
     # どのエージェントを動かすか
     if analysis_mode.startswith("フル"):
