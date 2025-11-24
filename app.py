@@ -268,8 +268,8 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    # 安定して動いたモデルに固定
-    return genai.GenerativeModel("gemini-2.0-flash-lite")
+    # 2.0 の通常 Flash モデルに切り替え
+    return genai.GenerativeModel("gemini-2.0-flash")
 
 
 # ======================================================
