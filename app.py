@@ -192,7 +192,7 @@ st.markdown(
     .magi-divider {
         height: 1px;
         border: none;
-        background: linear-gradient(to right, #4b5cff, transparent);
+        background: linear-gradient(to right, #4b5cff,透明);
         margin-bottom: 10px;
     }
 
@@ -226,7 +226,7 @@ st.markdown(
         <div class="magi-header-left">
             <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
             <div class="magi-header-sub">
-                GEMINI 2.5 FLASH · TEXT-ONLY LIGHTWEIGHT ANALYSIS
+                GEMINI 1.5 FLASH · TEXT-ONLY LIGHTWEIGHT ANALYSIS
             </div>
         </div>
         <div class="magi-status">
@@ -268,7 +268,10 @@ genai.configure(api_key=api_key)
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model():
-    return genai.GenerativeModel("gemini-2.5-flash")
+    """
+    ここを 2.5 から 1.5 に戻す。
+    """
+    return genai.GenerativeModel("gemini-1.5-flash")
 
 
 # ======================================================
@@ -500,7 +503,7 @@ def call_magi_plain(context: Dict[str, Any], mode_label: str) -> str:
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 768,  # 少し余裕を持たせる
+                "max_output_tokens": 768,
                 "temperature": 0.6,
             },
         )
@@ -790,7 +793,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     with st.spinner("MAGI 分析を実行中..."):
         magi_text = call_magi_plain(context, analysis_mode)
 
-    # ここで None は返ってこない設計なので、文字列のみを想定する
+    # エラー文字列はそのまま表示して終了
     if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
         st.error(magi_text)
         st.stop()
