@@ -275,7 +275,7 @@ st.markdown(
         <div class="magi-header-left">
             <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
             <div class="magi-header-sub">
-                GEMINI 2.0 FLASH LITE · TEXT-ONLY LIGHTWEIGHT ANALYSIS
+                GEMINI MULTI-MODEL · TEXT-ONLY LIGHTWEIGHT ANALYSIS
             </div>
         </div>
         <div class="magi-status">
@@ -315,11 +315,41 @@ if not api_key:
 
 genai.configure(api_key=api_key)
 
+# ======================================================
+# モデル選択（サイドバー）※デフォルト gemini-2.0-flash
+# ======================================================
+MODEL_CHOICES = {
+    "Gemini 2.0 Flash（デフォルト）": "gemini-2.0-flash",
+    "Gemini 2.5 Flash": "gemini-2.5-flash",
+    "Gemini 2.5 Pro": "gemini-2.5-pro",
+    "Gemini 2.5 Flash Lite": "gemini-2.5-flash-lite",
+}
+
+if "gemini_model_name" not in st.session_state:
+    st.session_state["gemini_model_name"] = "gemini-2.0-flash"
+
+st.sidebar.markdown("### モデル選択")
+
+default_label = next(
+    (label for label, mid in MODEL_CHOICES.items() if mid == st.session_state["gemini_model_name"]),
+    "Gemini 2.0 Flash（デフォルト）",
+)
+labels = list(MODEL_CHOICES.keys())
+default_index = labels.index(default_label) if default_label in labels else 0
+
+selected_label = st.sidebar.selectbox(
+    "使用するGeminiモデル",
+    labels,
+    index=default_index,
+    help="デフォルトは gemini-2.0-flash です。クォータ状況に応じて他モデルに切り替えることができます。",
+)
+st.session_state["gemini_model_name"] = MODEL_CHOICES[selected_label]
+
 
 @st.cache_resource(show_spinner=False)
-def get_gemini_model():
-    # ベースのモデル構成は変更しない
-    return genai.GenerativeModel("gemini-2.0-flash")
+def get_gemini_model(model_name: str):
+    """モデル名ごとにキャッシュする"""
+    return genai.GenerativeModel(model_name)
 
 
 # ======================================================
@@ -379,7 +409,7 @@ def classify_resource_exhausted(e: ResourceExhausted) -> str:
 # 媒体のテキスト化（画像・音声）
 # ======================================================
 def describe_image_with_gemini(img: Image.Image) -> str:
-    model = get_gemini_model()
+    model = get_gemini_model(st.session_state.get("gemini_model_name", "gemini-2.0-flash"))
     prompt = (
         "この画像に何が写っているか、日本語で簡潔に2〜3文で説明してください。\n"
         "心理的な印象も1文で添えてください。"
@@ -398,7 +428,7 @@ def describe_image_with_gemini(img: Image.Image) -> str:
 
 
 def transcribe_audio_with_gemini(uploaded_file) -> str:
-    model = get_gemini_model()
+    model = get_gemini_model(st.session_state.get("gemini_model_name", "gemini-2.0-flash"))
     audio_bytes = uploaded_file.getvalue()
     mime_type = uploaded_file.type or "audio/wav"
 
@@ -425,7 +455,7 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 # MAGI テキスト生成（SWOT ON/OFF対応・エラー詳細付き）
 # ======================================================
 def call_magi_plain(context: Dict[str, Any], enable_swot: bool) -> str | None:
-    model = get_gemini_model()
+    model = get_gemini_model(st.session_state.get("gemini_model_name", "gemini-2.0-flash"))
 
     trimmed_context = {
         "user_question": trim_text(context.get("user_question", "")),
