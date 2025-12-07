@@ -14,7 +14,7 @@ import docx
 # ページ設定
 # ======================================================
 st.set_page_config(
-    page_title="MAGI風マルチAI分析システム（テキスト簡易版＋SWOT）",
+    page_title="MAGI風マルチAI分析システム（テキスト簡易版＋SWOTオプション）",
     page_icon="🧬",
     layout="wide",
 )
@@ -230,7 +230,7 @@ st.markdown(
         <div class="magi-header-left">
             <div class="magi-header-title">MAGI MULTI-AGENT INTELLIGENCE</div>
             <div class="magi-header-sub">
-                GEMINI 2.5 FLASH · TEXT-ONLY LIGHTWEIGHT ANALYSIS + SWOT
+                GEMINI 2.5 FLASH · TEXT-ONLY LIGHTWEIGHT ANALYSIS · SWOT OPTIONAL
             </div>
         </div>
         <div class="magi-status">
@@ -246,8 +246,8 @@ st.markdown(
     """
     <div class="magi-info-card">
     <b>概要：</b> テキスト・画像・音声などを入力すると、<b>Magi-Logic / Magi-Human / Magi-Reality / Magi-Media</b> が
-    それぞれ短いコメントと判定を出し、統合MAGIが結論と <b>SWOT分析</b> をまとめます。<br>
-    JSONを使わずプレーンテキストのみでやり取りする、安定性重視の簡易版です。
+    それぞれ短いコメントと判定を出し、統合MAGIが結論をまとめます。<br>
+    オプションとして SWOT 分析を有効にすると、強み・弱み・機会・脅威を複数列挙します。
     </div>
     """,
     unsafe_allow_html=True,
@@ -281,10 +281,12 @@ def get_gemini_model():
 def clean_text_for_display(text: str) -> str:
     if not text:
         return ""
+    # Markdownの * を普通の中黒に変換
     return text.replace("*", "・")
 
 
-def trim_text(s: str, max_chars: int = 600) -> str:
+def trim_text(s: str, max_chars: int = 400) -> str:
+    """長すぎる入力は400文字でカットしてGemini側の負荷を下げる。"""
     if not s:
         return ""
     if len(s) <= max_chars:
@@ -327,11 +329,12 @@ def transcribe_audio_with_gemini(uploaded_file) -> str:
 
 
 # ======================================================
-# MAGI テキスト生成（1回呼び出し・プレーンテキスト＋SWOT）
+# MAGI テキスト生成（SWOT ON/OFF 切り替え）
 # ======================================================
-def call_magi_plain(context: Dict[str, Any]) -> str | None:
+def call_magi_plain(context: Dict[str, Any], enable_swot: bool) -> str | None:
     """
-    MAGI 4視点＋統合＋SWOTを、決め打ちのテキストフォーマットで1本の文字列として返してもらう。
+    MAGI 4視点＋統合（＋必要ならSWOT）を
+    決め打ちのテキストフォーマットで1本の文字列として返してもらう。
     JSONは使わない。
     """
     model = get_gemini_model()
@@ -343,7 +346,8 @@ def call_magi_plain(context: Dict[str, Any]) -> str | None:
         "image_description": trim_text(context.get("image_description", "")),
     }
 
-    sys_prompt = """
+    # --- SWОTあり版のプロンプト ---
+    sys_prompt_swot = """
 あなたは NERV の MAGI システム全体を模した統合AIです。
 Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論、
 さらに意思決定に役立つSWOT分析を、以下のフォーマットだけを使って日本語で出力してください。
@@ -382,8 +386,48 @@ Threats: 脅威を5〜7個、日本語で列挙し、読点「、」で区切っ
 - 箇条書き（・や番号付きリスト）は使わない。
 - 上記の見出し・ラベル以外の文言や飾りは追加しない。
 - 「Strengths:」「Weaknesses:」「Opportunities:」「Threats:」は英語ラベルをそのまま使う。
+- 暴力・自傷・違法行為などの過激な表現は避け、穏当で一般的な表現に言い換える。
 - 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
 """
+
+    # --- SWOTなし（以前の仕様）のプロンプト ---
+    sys_prompt_basic = """
+あなたは NERV の MAGI システム全体を模した統合AIです。
+Magi-Logic / Magi-Human / Magi-Reality / Magi-Media の4視点と、統合MAGIとしての結論を、
+以下のフォーマットだけを使って日本語で出力してください。
+
+[重要：出力フォーマット（この通りに出力すること）]
+
+【Magi-Logic】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Human】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Reality】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【Magi-Media】
+判定: 可決 または 保留 または 否決 のいずれか
+要約: 2〜3文、合計120文字以内
+
+【MAGI-統合サマリー】
+全体としての結論を150文字以内でまとめる
+
+【MAGI-統合詳細】
+統合的な視点から、2〜4段落・合計500文字以内で詳細なコメントと推奨アクションを書く
+
+[制約]
+- 箇条書き（・や番号付きリスト）は使わない。
+- 上記の見出し・ラベル以外の文言や飾りは追加しない。
+- 暴力・自傷・違法行為などの過激な表現は避け、穏当で一般的な表現に言い換える。
+- 出力は必ずこのフォーマットに沿ったプレーンテキストのみとする。
+"""
+
+    sys_prompt = sys_prompt_swot if enable_swot else sys_prompt_basic
 
     ctx_text = (
         "【ユーザーからの情報】\n"
@@ -397,18 +441,61 @@ Threats: 脅威を5〜7個、日本語で列挙し、読点「、」で区切っ
         resp = model.generate_content(
             [sys_prompt, ctx_text],
             generation_config={
-                "max_output_tokens": 720,  # SWOTも含めて出力上限
+                "max_output_tokens": 720 if enable_swot else 512,
             },
         )
 
-        if not resp.candidates or not resp.candidates[0].content or not resp.candidates[0].content.parts:
-            return None
+        # 候補が全く無い場合
+        if not resp.candidates:
+            return (
+                "【エラー】Gemini が応答候補を生成できませんでした。\n"
+                "・入力内容が長すぎるか\n"
+                "・安全ポリシーに抵触した可能性があります。\n"
+                "質問を短く・穏やかな表現にして再実行してみてください。"
+            )
+
+        cand = resp.candidates[0]
+        content = getattr(cand, "content", None)
+        parts = getattr(content, "parts", None)
+
+        if not content or not parts:
+            # finish_reason からざっくり原因を推定
+            reason = getattr(cand, "finish_reason", None)
+            reason_str = str(reason).upper() if reason is not None else ""
+
+            if "SAFETY" in reason_str:
+                return (
+                    "【エラー】Gemini の安全ポリシーにより回答がブロックされました。\n"
+                    "・特定の個人攻撃、自傷行為、違法行為などに関する内容が含まれていないか確認してください。\n"
+                    "・表現をもっと一般的で穏やかなものに言い換えて再実行してみてください。"
+                )
+            elif "MAX_TOKENS" in reason_str or "TOKENS" in reason_str:
+                return (
+                    "【エラー】Gemini の出力トークン上限に達し、回答を最後まで生成できませんでした。\n"
+                    "・質問や補足テキストをさらに短くしてください。\n"
+                    "・必要なポイントだけに絞って問い直してみてください。"
+                )
+            else:
+                return (
+                    "【エラー】Gemini が有効なテキストを返しませんでした。\n"
+                    "・入力内容が長すぎるか、安全ポリシーに抵触した可能性があります。\n"
+                    "・質問を短くし、刺激的な表現を避けて再実行してみてください。"
+                )
 
         text = (resp.text or "").strip()
-        return text if text else None
+        if not text:
+            return (
+                "【エラー】Gemini が空のテキストを返しました。\n"
+                "質問や補足テキストを短めにして再実行してみてください。"
+            )
+
+        return text
 
     except ResourceExhausted:
-        return "【エラー】Gemini のリソース上限に達しました。時間をおいてから再度お試しください。"
+        return (
+            "【エラー】Gemini のリソース上限に達しました。\n"
+            "時間をおいてから再度お試しください。"
+        )
     except GoogleAPIError as e:
         return f"【エラー】Gemini API で問題が発生しました: {str(e)}"
     except Exception as e:
@@ -424,7 +511,7 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str], Dict[str
     - agents: logic/human/reality/media
     - aggregated: summary/details
     - swot: strengths/weaknesses/opportunities/threats
-    に分解する。
+    に分解する。SWOTが無い場合は空のまま。
     """
     agents: Dict[str, Any] = {}
     aggregated: Dict[str, str] = {"summary": "", "details": ""}
@@ -461,12 +548,7 @@ def parse_magi_text(text: str) -> tuple[Dict[str, Any], Dict[str, str], Dict[str
 
 
 def parse_agent_block(name_jp: str, body: str) -> Dict[str, Any]:
-    """
-    各エージェントブロックの中から
-    - 判定: 可決/保留/否決
-    - 要約: 以下の行
-    を抜き出す。
-    """
+    """各エージェントブロックから判定と要約を抽出。"""
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     decision_jp = "保留"
     summary = ""
@@ -533,7 +615,7 @@ def decision_to_css(decision_code: str) -> Dict[str, str]:
 
 
 # ======================================================
-# Word レポート生成（SWOT付き）
+# Word レポート生成（SWOTはenable_swot=Trueのときのみ）
 # ======================================================
 def build_word_report(
     context: Dict[str, Any],
@@ -541,10 +623,15 @@ def build_word_report(
     aggregated: Dict[str, Any],
     swot: Dict[str, str],
     magi_raw_text: str,
+    enable_swot: bool,
     image: Optional[Image.Image] = None,
 ) -> bytes:
     doc = docx.Document()
-    doc.add_heading("MAGI風マルチAI分析レポート（テキスト簡易版＋SWOT）", level=1)
+    title = "MAGI風マルチAI分析レポート（テキスト簡易版"
+    if enable_swot:
+        title += "＋SWOT"
+    title += "）"
+    doc.add_heading(title, level=1)
 
     # 第1章 入力情報
     doc.add_heading("第1章 入力情報", level=2)
@@ -591,15 +678,13 @@ def build_word_report(
         for line in agg_details.splitlines():
             doc.add_paragraph(line)
 
-    # 第4章 SWOT分析
-    doc.add_heading("第4章 SWOT分析", level=2)
-    if any(swot.values()):
+    # 第4章 SWOT分析（SWOT ON のときだけ付ける）
+    if enable_swot and any(swot.values()):
+        doc.add_heading("第4章 SWOT分析", level=2)
         doc.add_paragraph(f"Strengths（強み）：{swot.get('strengths', '')}")
         doc.add_paragraph(f"Weaknesses（弱み）：{swot.get('weaknesses', '')}")
         doc.add_paragraph(f"Opportunities（機会）：{swot.get('opportunities', '')}")
         doc.add_paragraph(f"Threats（脅威）：{swot.get('threats', '')}")
-    else:
-        doc.add_paragraph("今回の実行では、SWOT分析は取得できませんでした。")
 
     # 付録：生テキスト
     doc.add_heading("付録：MAGI生テキスト", level=2)
@@ -627,6 +712,12 @@ user_question = st.text_area(
         "例：この写真や音声から受ける印象と、次に取るべき行動を知りたい。"
     ),
     height=120,
+)
+
+# ★ SWOTをオンにするかどうか
+enable_swot = st.checkbox(
+    "SWOT分析を有効にする（Strengths / Weaknesses / Opportunities / Threats を複数列挙）",
+    value=False,
 )
 
 st.markdown("#### 媒体入力モード（任意）")
@@ -728,17 +819,17 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         st.stop()
 
     with st.spinner("MAGI 分析を実行中..."):
-        magi_text = call_magi_plain(context)
+        magi_text = call_magi_plain(context, enable_swot=enable_swot)
 
     if magi_text is None:
         st.error(
-            "【エラー】Gemini が有効なテキストを返しませんでした。\n"
-            "・内容が極端に長い\n・安全フィルタにかかる表現が含まれている\nなどの可能性があります。\n\n"
-            "一度、質問やテキストを短く・穏やかな表現にして再実行してみてください。"
+            "【エラー】Gemini からテキストが返ってきませんでした。\n"
+            "質問や補足テキストを短くし、穏やかな表現にして再実行してみてください。"
         )
         st.stop()
 
     if isinstance(magi_text, str) and magi_text.startswith("【エラー】"):
+        # call_magi_plainが返した詳細なエラーをそのまま表示
         st.error(magi_text)
         st.stop()
 
@@ -846,59 +937,60 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
     )
 
     # ==================================================
-    # SWOT 表示
+    # SWOT 表示（SWOT ON のときだけ）
     # ==================================================
-    st.markdown(
-        '<div class="magi-section-title">SWOT · STRATEGIC VIEW</div><hr class="magi-divider">',
-        unsafe_allow_html=True,
-    )
+    if enable_swot:
+        st.markdown(
+            '<div class="magi-section-title">SWOT · STRATEGIC VIEW</div><hr class="magi-divider">',
+            unsafe_allow_html=True,
+        )
 
-    if any(swot.values()):
-        col_s, col_w = st.columns(2)
-        with col_s:
-            st.markdown(
-                f'''
-                <div class="magi-panel magi-panel-swot">
-                  <b>Strengths（強み）</b><br>
-                  {clean_text_for_display(swot.get("strengths", "")).replace("\\n", "<br>")}
-                </div>
-                ''',
-                unsafe_allow_html=True,
-            )
-        with col_w:
-            st.markdown(
-                f'''
-                <div class="magi-panel magi-panel-swot">
-                  <b>Weaknesses（弱み）</b><br>
-                  {clean_text_for_display(swot.get("weaknesses", "")).replace("\\n", "<br>")}
-                </div>
-                ''',
-                unsafe_allow_html=True,
-            )
+        if any(swot.values()):
+            col_s, col_w = st.columns(2)
+            with col_s:
+                st.markdown(
+                    f'''
+                    <div class="magi-panel magi-panel-swot">
+                      <b>Strengths（強み）</b><br>
+                      {clean_text_for_display(swot.get("strengths", "")).replace("\\n", "<br>")}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+            with col_w:
+                st.markdown(
+                    f'''
+                    <div class="magi-panel magi-panel-swot">
+                      <b>Weaknesses（弱み）</b><br>
+                      {clean_text_for_display(swot.get("weaknesses", "")).replace("\\n", "<br>")}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
 
-        col_o, col_t = st.columns(2)
-        with col_o:
-            st.markdown(
-                f'''
-                <div class="magi-panel magi-panel-swot">
-                  <b>Opportunities（機会）</b><br>
-                  {clean_text_for_display(swot.get("opportunities", "")).replace("\\n", "<br>")}
-                </div>
-                ''',
-                unsafe_allow_html=True,
-            )
-        with col_t:
-            st.markdown(
-                f'''
-                <div class="magi-panel magi-panel-swot">
-                  <b>Threats（脅威）</b><br>
-                  {clean_text_for_display(swot.get("threats", "")).replace("\\n", "<br>")}
-                </div>
-                ''',
-                unsafe_allow_html=True,
-            )
-    else:
-        st.info("今回の実行では、SWOT分析は生成されませんでした。入力内容をもう少し具体的にして再実行してみてください。")
+            col_o, col_t = st.columns(2)
+            with col_o:
+                st.markdown(
+                    f'''
+                    <div class="magi-panel magi-panel-swot">
+                      <b>Opportunities（機会）</b><br>
+                      {clean_text_for_display(swot.get("opportunities", "")).replace("\\n", "<br>")}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+            with col_t:
+                st.markdown(
+                    f'''
+                    <div class="magi-panel magi-panel-swot">
+                      <b>Threats（脅威）</b><br>
+                      {clean_text_for_display(swot.get("threats", "")).replace("\\n", "<br>")}
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("今回の実行では、SWOT分析は生成されませんでした。入力内容をもう少し具体的にして再実行してみてください。")
 
     # ==================================================
     # レポート出力
@@ -909,6 +1001,7 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         aggregated=aggregated,
         swot=swot,
         magi_raw_text=magi_text,
+        enable_swot=enable_swot,
         image=image_for_report,
     )
 
@@ -917,15 +1010,20 @@ if st.button("🔎 MAGI による分析を実行", type="primary"):
         unsafe_allow_html=True,
     )
 
+    file_name = "MAGI分析レポート_テキスト簡易版"
+    if enable_swot:
+        file_name += "+SWOT"
+    file_name += ".docx"
+
     st.download_button(
         "MAGIレポート（Word）をダウンロード",
         data=report_bytes,
-        file_name="MAGI分析レポート_テキスト簡易版＋SWOT.docx",
+        file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 else:
     st.info(
-        "下のボタンを押すと、MAGI が4視点＋統合のコメントとSWOT分析をテキスト形式で生成します。\n"
-        "まずはシンプルな質問だけで動作確認してみるのがおすすめです。"
+        "下のボタンを押すと、MAGI が4視点＋統合のコメントを生成します。\n"
+        "SWOT分析を使いたい場合は、チェックボックスをオンにしてから実行してください。"
     )
