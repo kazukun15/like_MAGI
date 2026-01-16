@@ -2,6 +2,7 @@ import os
 import io
 import re
 import time
+import random
 from typing import Dict, Any, Optional
 
 import streamlit as st
@@ -90,28 +91,24 @@ st.markdown(
     }
 
     /* 各エージェントの色分け */
-    /* MELCHIOR-1 (LOGIC) - Science/Blue */
     .agent-logic {
         border-color: #00ccff;
         box-shadow: 0 0 10px rgba(0, 204, 255, 0.15);
     }
     .agent-logic h4 { color: #00ccff; text-shadow: 0 0 5px rgba(0,204,255,0.5); }
     
-    /* BALTHASAR-2 (HUMAN) - Mother/Orange */
     .agent-human {
         border-color: #ff9900;
         box-shadow: 0 0 10px rgba(255, 153, 0, 0.15);
     }
     .agent-human h4 { color: #ff9900; text-shadow: 0 0 5px rgba(255,153,0,0.5); }
 
-    /* CASPER-3 (REALITY) - Woman/Red-Pink */
     .agent-reality {
         border-color: #ff3366;
         box-shadow: 0 0 10px rgba(255, 51, 102, 0.15);
     }
     .agent-reality h4 { color: #ff3366; text-shadow: 0 0 5px rgba(255,51,102,0.5); }
 
-    /* MEDIA & SWOT */
     .agent-media { border-color: #aa00ff; }
     .agent-media h4 { color: #d066ff; }
     
@@ -188,7 +185,7 @@ st.markdown(
         font-size: 11px;
         padding: 2px 8px;
         border: 1px solid;
-        border-radius: 0; /* 角張らせる */
+        border-radius: 0;
         background: rgba(0,0,0,0.4);
     }
     .swot-s { color: #81c784; border-color: #81c784; }
@@ -244,7 +241,8 @@ genai.configure(api_key=api_key)
 # モデル設定 (セッション管理)
 # ======================================================
 if "gemini_model_name" not in st.session_state:
-    st.session_state["gemini_model_name"] = "gemini-2.0-flash"
+    # 安定性を優先してデフォルトを 1.5 Flash に変更
+    st.session_state["gemini_model_name"] = "gemini-1.5-flash"
 
 # サイドバー設定
 st.sidebar.markdown(
@@ -253,9 +251,9 @@ st.sidebar.markdown(
 )
 
 MODEL_CHOICES = {
-    "Gemini 2.0 Flash": "gemini-2.0-flash",
-    "Gemini 1.5 Pro": "gemini-1.5-pro",
-    "Gemini 1.5 Flash": "gemini-1.5-flash",
+    "Gemini 1.5 Flash (Stable)": "gemini-1.5-flash",
+    "Gemini 2.0 Flash (Preview)": "gemini-2.0-flash",
+    "Gemini 1.5 Pro (High-Spec)": "gemini-1.5-pro",
 }
 
 selected_model_label = st.sidebar.selectbox(
@@ -271,14 +269,35 @@ def get_gemini_model():
 
 
 # ======================================================
-# ヘルパー関数
+# ヘルパー関数 (リトライロジック付き)
 # ======================================================
 def clean_text(text: str) -> str:
     if not text: return ""
     return text.replace("*", "").strip()
 
+def generate_with_retry(model, content, max_retries=3):
+    """
+    429エラー(ResourceExhausted)が発生した場合、
+    指数バックオフ (Exponential Backoff) で待機して再試行するラッパー関数
+    """
+    for attempt in range(max_retries):
+        try:
+            return model.generate_content(content)
+        except ResourceExhausted as e:
+            # クォータ制限の場合
+            wait_time = (2 ** attempt) + random.uniform(0, 1) # 1秒, 2秒, 4秒...と待機時間を増やす
+            if attempt < max_retries - 1:
+                st.toast(f"⚠️ SYSTEM BUSY (429). RETRYING IN {wait_time:.1f}s...", icon="⏳")
+                time.sleep(wait_time)
+                continue
+            else:
+                # リトライ上限到達
+                raise e
+        except Exception as e:
+            raise e
+
 def analyze_media(file, mime_type: str, prompt: str) -> str:
-    """画像や音声を解析する汎用関数"""
+    """画像や音声を解析する汎用関数（リトライ付き）"""
     model = get_gemini_model()
     try:
         if mime_type.startswith("image"):
@@ -286,18 +305,21 @@ def analyze_media(file, mime_type: str, prompt: str) -> str:
         else:
             content = [prompt, {"mime_type": mime_type, "data": file.getvalue()}]
         
-        resp = model.generate_content(content)
+        # リトライ付きで実行
+        resp = generate_with_retry(model, content)
         return clean_text(resp.text)
+    except ResourceExhausted:
+        return "ERROR: 429 Quota Exceeded. (System Overload)"
     except Exception as e:
         return f"ERROR: {str(e)}"
 
 # ======================================================
-# MAGI ロジック（プロンプトエンジニアリング）
+# MAGI ロジック
 # ======================================================
 def call_magi_core(context: Dict[str, Any], enable_swot: bool) -> str | None:
     model = get_gemini_model()
     
-    # 役割定義: 3つのAIの人格を明確に分離
+    # 役割定義
     system_prompt = """
 あなたはスーパーコンピュータシステム「MAGI」です。
 以下の3つの人格（エージェント）と、メディア解析担当、そして統合判断を行うメインプロセッサとして振る舞ってください。
@@ -355,8 +377,11 @@ Threats: (脅威を5つ、読点で区切って列挙)
     """
 
     try:
-        response = model.generate_content([system_prompt, user_data])
+        # リトライ付きで実行
+        response = generate_with_retry(model, [system_prompt, user_data])
         return response.text
+    except ResourceExhausted:
+        return "SYSTEM FAILURE: 429 RESOURCE EXHAUSTED. Please switch models or wait a moment."
     except Exception as e:
         return f"SYSTEM FAILURE: {str(e)}"
 
@@ -365,20 +390,15 @@ Threats: (脅威を5つ、読点で区切って列挙)
 # ======================================================
 def parse_magi_output(text: str):
     sections = {}
-    current_section = None
-    
-    # 正規表現でセクション分割
     pattern = re.compile(r"\[SECTION:(.*?)\]")
     parts = pattern.split(text)
     
-    # splitの結果、[0]は空または前置き、[1]はタグ名、[2]は中身、[3]はタグ名...
     for i in range(1, len(parts), 2):
         tag = parts[i].strip()
         content = parts[i+1].strip()
         
         data = {"decision": "保留", "summary": "", "raw": content}
         
-        # 判定と見解を抽出
         for line in content.split('\n'):
             if line.startswith("判定:"):
                 val = line.split(":", 1)[1].strip()
@@ -495,7 +515,6 @@ if uploaded_file:
                 uploaded_file, mime, 
                 "この画像に写っているものを客観的に、詳細に描写してください。感情的な印象も含めてください。"
             )
-            st.caption(f"Analysis: {context['image_description'][:50]}...")
             
     elif mime.startswith("audio"):
         st.audio(uploaded_file)
@@ -509,7 +528,7 @@ if uploaded_file:
 st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
 if st.button("INITIALIZE MAGI DELIBERATION", type="primary", use_container_width=True):
     
-    if not user_question and not uploaded_file:
+    if not user_question and not uploaded_file and not text_input:
         st.warning("⚠️ DATA INSUFFICIENT. PLEASE INPUT QUERY OR MEDIA.")
         st.stop()
         
@@ -529,7 +548,7 @@ if st.button("INITIALIZE MAGI DELIBERATION", type="primary", use_container_width
     for i, step in enumerate(steps):
         status_text.markdown(f"<span style='color:#00ffcc; font-family:Orbitron;'>{step}</span>", unsafe_allow_html=True)
         progress_bar.progress((i + 1) * 15)
-        time.sleep(0.15) # 演出用ウェイト
+        time.sleep(0.1) 
 
     # Gemini 実行
     raw_result = call_magi_core(context, swot_mode)
@@ -537,8 +556,11 @@ if st.button("INITIALIZE MAGI DELIBERATION", type="primary", use_container_width
     status_text.empty()
     progress_bar.empty()
     
+    # 失敗時の表示
     if not raw_result or "SYSTEM FAILURE" in raw_result:
         st.error(raw_result or "UNKNOWN ERROR")
+        if "RESOURCE EXHAUSTED" in raw_result:
+             st.info("💡 **HINT**: Try switching to 'Gemini 1.5 Flash' in the sidebar or wait a minute before retrying.")
         st.stop()
 
     # 結果パース
@@ -662,4 +684,3 @@ if st.button("INITIALIZE MAGI DELIBERATION", type="primary", use_container_width
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         type="secondary"
     )
-
